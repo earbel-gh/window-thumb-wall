@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 
@@ -24,8 +25,9 @@ internal sealed class AppState
             var json = File.ReadAllText(statePath);
             return JsonSerializer.Deserialize<AppState>(json) ?? new AppState();
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
+            Trace.TraceWarning("Could not load WindowThumbWall state: {0}", ex.GetType().Name);
             return new AppState();
         }
     }
@@ -33,15 +35,25 @@ internal sealed class AppState
     internal void Save()
     {
         string statePath = GetStatePath();
+        string tempPath = statePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(statePath)!);
             var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(statePath, json);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(statePath))!);
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, statePath, overwrite: true);
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Silently ignore save errors.
+            Trace.TraceWarning("Could not save WindowThumbWall state: {0}", ex.GetType().Name);
+            try
+            {
+                File.Delete(tempPath);
+            }
+            catch (Exception cleanupError) when (cleanupError is IOException or UnauthorizedAccessException)
+            {
+                Trace.TraceWarning("Could not remove temporary WindowThumbWall state: {0}", cleanupError.GetType().Name);
+            }
         }
     }
 
@@ -67,6 +79,12 @@ internal sealed class SlotState
 
 internal sealed class WindowGeometry
 {
+    internal static WindowGeometry? FromBounds(double left, double top, double width, double height, bool isMaximized) =>
+        double.IsFinite(left) && double.IsFinite(top) &&
+        double.IsFinite(width) && width > 0 && double.IsFinite(height) && height > 0
+            ? new WindowGeometry { Left = left, Top = top, Width = width, Height = height, IsMaximized = isMaximized }
+            : null;
+
     public double Left { get; set; }
     public double Top { get; set; }
     public double Width { get; set; }

@@ -11,7 +11,6 @@ internal sealed class WindowIdentity
     public string ExecutablePath { get; set; } = string.Empty;
     public string WindowClassName { get; set; } = string.Empty;
     public string AppUserModelId { get; set; } = string.Empty;
-    public WindowBounds? Bounds { get; set; }
 
     internal static WindowIdentity Capture(IntPtr handle)
     {
@@ -24,8 +23,7 @@ internal sealed class WindowIdentity
             ProcessStartTimeUtcTicks = GetProcessStartTimeUtcTicks(processId),
             ExecutablePath = NativeMethods.GetProcessImagePath(handle),
             WindowClassName = NativeMethods.GetWindowClassName(handle),
-            AppUserModelId = NativeMethods.GetWindowAppUserModelId(handle),
-            Bounds = CaptureBounds(handle)
+            AppUserModelId = NativeMethods.GetWindowAppUserModelId(handle)
         };
     }
 
@@ -48,17 +46,6 @@ internal sealed class WindowIdentity
             return GetProcessStartTimeUtcTicks(processId) == savedStartTime;
 
         return true;
-    }
-
-    internal static WindowBounds? CaptureBounds(IntPtr handle)
-    {
-        if (handle == IntPtr.Zero || !NativeMethods.GetWindowRect(handle, out NativeMethods.RECT rect) ||
-            rect.Right <= rect.Left || rect.Bottom <= rect.Top)
-        {
-            return null;
-        }
-
-        return new WindowBounds(rect.Left, rect.Top, rect.Right, rect.Bottom);
     }
 
     private static long? GetProcessStartTimeUtcTicks(uint processId)
@@ -84,24 +71,4 @@ internal sealed class WindowIdentity
             return null;
         }
     }
-}
-
-internal sealed record WindowBounds
-{
-    public WindowBounds()
-    {
-    }
-
-    public WindowBounds(int left, int top, int right, int bottom)
-    {
-        Left = left;
-        Top = top;
-        Right = right;
-        Bottom = bottom;
-    }
-
-    public int Left { get; set; }
-    public int Top { get; set; }
-    public int Right { get; set; }
-    public int Bottom { get; set; }
 }

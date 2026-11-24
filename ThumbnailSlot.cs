@@ -180,6 +180,8 @@ internal sealed class ThumbnailSlot
         IsPinned = true;
     }
 
+    internal void Unpin() => IsPinned = false;
+
     private bool TryRegisterThumbnail()
     {
         int hr = NativeMethods.DwmRegisterThumbnail(_ownerHwnd, SourceHwnd, out var id);
