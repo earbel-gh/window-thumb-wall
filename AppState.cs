@@ -61,6 +61,8 @@ internal sealed class SlotState
 {
     public string ProcessName { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
+    public bool IsPinned { get; set; }
+    public WindowIdentity? Identity { get; set; }
 }
 
 internal sealed class WindowGeometry

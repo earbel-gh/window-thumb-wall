@@ -39,6 +39,8 @@ WindowThumbWall is a Windows desktop app for building a live thumbnail wall from
 - A white border that indicates which monitored source window is currently active.
 - Fullscreen mode for dedicated monitoring.
 - Automatic cleanup when source windows disappear.
+- Pin an individual window from the picker. Pinning disables that process's auto-add entry; use **Add app** when you explicitly want every window from that process.
+- Restores saved windows using available identity evidence, not process name alone. Ambiguous or legacy slots remain unresolved until you choose a window.
 - Optional automatic addition for registered applications. Windows created while WindowThumbWall is running are added in their observed creation order within each application; registered applications stay in their configured order.
 
 ## Automatic Addition Order
@@ -47,7 +49,7 @@ Automatic addition uses a stable order close to the Windows taskbar, not an exac
 
 ## Quick Start
 1. Launch WindowThumbWall.
-2. Double-click a window from the list to add it to the wall.
+2. Double-click a window from the list to pin it to the wall. If its app is set to auto-add, pinning disables that app's auto-add entry.
 3. Click a thumbnail to bring the original window to the foreground.
 4. Right-click a thumbnail to remove it.
 5. When a monitored app flashes on the taskbar or a Windows notification resolves to it uniquely, its thumbnail border flashes red in the wall.
