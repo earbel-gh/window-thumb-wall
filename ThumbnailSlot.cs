@@ -17,7 +17,11 @@ internal sealed class ThumbnailSlot
     internal IntPtr SourceHwnd { get; private set; }
     internal string SourceTitle { get; private set; } = string.Empty;
     internal string SourceProcessName { get; private set; } = string.Empty;
+    internal WindowIdentity? Identity { get; private set; }
+    internal SlotState? UnresolvedState { get; private set; }
+    internal bool IsPinned { get; private set; }
     internal bool IsOccupied => SourceHwnd != IntPtr.Zero;
+    internal bool IsUnresolved => !IsOccupied && UnresolvedState != null;
     internal bool HasRegistration => _thumbId != IntPtr.Zero;
 
     internal ThumbnailSlot(ThumbHost host, IntPtr ownerHwnd)
@@ -26,7 +30,7 @@ internal sealed class ThumbnailSlot
         _ownerHwnd = ownerHwnd;
     }
 
-    internal bool Assign(IntPtr sourceHwnd, string title, string processName)
+    internal bool Assign(IntPtr sourceHwnd, string title, string processName, WindowIdentity identity, bool isPinned)
     {
         Clear();
         if (_host.Hwnd == IntPtr.Zero) return false;
@@ -34,6 +38,8 @@ internal sealed class ThumbnailSlot
         SourceHwnd = sourceHwnd;
         SourceTitle = title;
         SourceProcessName = processName;
+        Identity = identity;
+        IsPinned = isPinned;
         if (!TryRegisterThumbnail())
         {
             ResetSourceInfo();
@@ -42,6 +48,13 @@ internal sealed class ThumbnailSlot
 
         UpdateThumbnail();
         return true;
+    }
+
+    internal void SetUnresolved(SlotState state)
+    {
+        Clear();
+        UnresolvedState = state;
+        IsPinned = state.IsPinned;
     }
 
     internal bool RefreshRegistration()
@@ -148,9 +161,23 @@ internal sealed class ThumbnailSlot
         return true;
     }
 
+    internal bool IsSourceWindowValid() =>
+        SourceHwnd == IntPtr.Zero ||
+        (NativeMethods.IsWindow(SourceHwnd) && (Identity?.IsSameLiveProcessAndClass(SourceHwnd) ?? true));
+
     internal void UpdateSourceTitle(string title)
     {
         SourceTitle = title;
+    }
+
+    internal void UpdateIdentity(WindowIdentity identity)
+    {
+        Identity = identity;
+    }
+
+    internal void MarkPinned()
+    {
+        IsPinned = true;
     }
 
     private bool TryRegisterThumbnail()
@@ -179,6 +206,9 @@ internal sealed class ThumbnailSlot
         SourceHwnd = IntPtr.Zero;
         SourceTitle = string.Empty;
         SourceProcessName = string.Empty;
+        Identity = null;
+        UnresolvedState = null;
+        IsPinned = false;
     }
 
     private static bool RectEquals(NativeMethods.RECT a, NativeMethods.RECT b) =>

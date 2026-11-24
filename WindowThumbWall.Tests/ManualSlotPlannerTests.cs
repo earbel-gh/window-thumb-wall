@@ -13,6 +13,17 @@ public sealed class ManualSlotPlannerTests
     }
 
     [Fact]
+    public void GetAddTarget_SkipsReservedUnresolvedSlots()
+    {
+        int result = ManualSlotPlanner.GetAddTarget(
+            [IntPtr.Zero, (IntPtr)20, IntPtr.Zero],
+            (IntPtr)30,
+            new HashSet<int> { 0 });
+
+        Assert.Equal(2, result);
+    }
+
+    [Fact]
     public void GetAddTarget_AppendsWhenEverySlotIsOccupied()
     {
         int result = ManualSlotPlanner.GetAddTarget(
