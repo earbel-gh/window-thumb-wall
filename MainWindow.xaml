@@ -23,6 +23,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <TextBlock Grid.Row="0"
                        x:Name="FilterLabel"
@@ -143,6 +144,8 @@
                     </DataTemplate>
                 </Button.ContentTemplate>
             </Button>
+            <TextBlock Grid.Row="6" x:Name="StateNotice" Visibility="Collapsed"
+                       Foreground="#FFC074" TextWrapping="Wrap" Margin="0,6,0,0"/>
         </Grid>
 
         <GridSplitter Grid.Column="1" x:Name="Splitter" Width="4"

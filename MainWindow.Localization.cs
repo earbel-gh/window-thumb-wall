@@ -10,6 +10,7 @@ public partial class MainWindow
         FilterLabel.Text = LocalizedText.Get("label.filter");
         AppListLabel.Text = LocalizedText.Get("label.autoApps");
         SpecificWindowsLabel.Text = LocalizedText.Get("label.specificWindows");
+        StateNotice.Text = LocalizedText.Get("state.loadFailed");
         FullScreenButton.Content = LocalizedText.Get("button.fullscreen");
         SettingsButton.Content = LocalizedText.Get("label.settings");
         ShortcutGuideButton.Content = BuildQuickHelpText();

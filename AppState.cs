@@ -16,17 +16,27 @@ internal sealed class AppState
     public double AppListHeight { get; set; }
     public bool EnableOsNotificationAttention { get; set; }
 
-    internal static AppState Load()
+    internal static AppState Load() => Load(out _);
+
+    internal static AppState Load(out bool canSave)
     {
         string statePath = GetStatePath();
+        canSave = true;
         try
         {
-            if (!File.Exists(statePath)) return new AppState();
             var json = File.ReadAllText(statePath);
-            return JsonSerializer.Deserialize<AppState>(json) ?? new AppState();
+            var state = JsonSerializer.Deserialize<AppState>(json);
+            if (state?.Slots == null || state.AutoAddApps == null || state.Slots.Any(slot => slot == null))
+                throw new JsonException("WindowThumbWall state has an invalid layout.");
+            return state;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new AppState();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
+            canSave = false;
             Trace.TraceWarning("Could not load WindowThumbWall state: {0}", ex.GetType().Name);
             return new AppState();
         }

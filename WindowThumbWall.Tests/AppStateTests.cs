@@ -1,4 +1,7 @@
 using System.IO;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
+using System.Windows;
 
 namespace WindowThumbWall.Tests;
 
@@ -136,6 +139,93 @@ public sealed class AppStateTests : IDisposable
 
         Assert.False(loaded.EnableOsNotificationAttention);
     }
+
+    [Fact]
+    public void RestoreAndSave_PreservesLegacySlotOrderAndAppRulesWithoutCreatingPins()
+    {
+        WriteState("""
+            {
+              "AutoAddApps": ["chrome", "outlook"],
+              "Slots": [
+                { "ProcessName": "chrome", "Title": "Saved first" },
+                { "ProcessName": "notepad", "Title": "Saved second" },
+                { "ProcessName": "outlook", "Title": "Saved third" }
+              ]
+            }
+            """);
+
+        for (int i = 0; i < 2; i++)
+        {
+            RestoreAndClose(Visibility.Collapsed);
+            Assert.Contains("\"IsPinned\"", File.ReadAllText(_statePath));
+            AppState saved = AppState.Load();
+            Assert.Equal(["chrome", "outlook"], saved.AutoAddApps);
+            Assert.Equal(["Saved first", "Saved second", "Saved third"], saved.Slots.Select(slot => slot.Title));
+            Assert.All(saved.Slots, slot => Assert.False(slot.IsPinned));
+        }
+    }
+
+    [Theory]
+    [InlineData("{")]
+    [InlineData("null")]
+    [InlineData("{\"Slots\":[null]}")]
+    public void RestoreAndSave_LeavesUnreadableSettingsUntouched(string original)
+    {
+        WriteState(original);
+
+        RestoreAndClose(Visibility.Visible);
+
+        Assert.Equal(original, File.ReadAllText(_statePath));
+    }
+
+    [Fact]
+    public void RestoreAndSave_DoesNotOverwriteSettingsAfterAnInitialReadLockIsReleased()
+    {
+        const string original = """{"AutoAddApps":["chrome"]}""";
+        WriteState(original);
+        using var stateLock = File.Open(_statePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        RestoreAndClose(Visibility.Visible, stateLock.Dispose);
+
+        Assert.Equal(original, File.ReadAllText(_statePath));
+        RestoreAndClose(Visibility.Collapsed);
+        Assert.Equal(["chrome"], AppState.Load().AutoAddApps);
+    }
+
+    private void WriteState(string contents)
+    {
+        Directory.CreateDirectory(_tempDirectory);
+        File.WriteAllText(_statePath, contents);
+    }
+
+    private static void RestoreAndClose(Visibility noticeVisibility, Action? beforeClose = null)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new MainWindow();
+                Invoke(window, "RestoreAutoAddApps");
+                Invoke(window, "RestoreSlots");
+                Assert.Equal(noticeVisibility, ((UIElement)window.FindName("StateNotice")).Visibility);
+                beforeClose?.Invoke();
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(12)), "The WPF restore and close operation did not finish.");
+        if (failure is not null)
+            ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    private static void Invoke(MainWindow window, string name) =>
+        typeof(MainWindow).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
 
     public void Dispose()
     {
