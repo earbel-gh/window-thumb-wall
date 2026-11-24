@@ -29,6 +29,7 @@ public sealed class AppStateTests : IDisposable
     {
         AppState state = new()
         {
+            AutoAddApps = ["chrome", "outlook"],
             LeftPanelWidth = 320,
             AppListHeight = 240,
             EnableOsNotificationAttention = true,
@@ -46,8 +47,7 @@ public sealed class AppStateTests : IDisposable
                         ProcessStartTimeUtcTicks = 789,
                         ExecutablePath = @"C:\Windows\notepad.exe",
                         WindowClassName = "Notepad",
-                        AppUserModelId = "notepad.app",
-                        Bounds = new WindowBounds(10, 20, 810, 620)
+                        AppUserModelId = "notepad.app"
                     }
                 }
             ]
@@ -59,6 +59,7 @@ public sealed class AppStateTests : IDisposable
 
         AppState loaded = AppState.Load();
 
+        Assert.Equal(["chrome", "outlook"], loaded.AutoAddApps);
         Assert.Equal(320, loaded.LeftPanelWidth);
         Assert.Equal(240, loaded.AppListHeight);
         Assert.True(loaded.EnableOsNotificationAttention);
@@ -72,7 +73,31 @@ public sealed class AppStateTests : IDisposable
         Assert.Equal(@"C:\Windows\notepad.exe", loaded.Slots[0].Identity?.ExecutablePath);
         Assert.Equal("Notepad", loaded.Slots[0].Identity?.WindowClassName);
         Assert.Equal("notepad.app", loaded.Slots[0].Identity?.AppUserModelId);
-        Assert.Equal(new WindowBounds(10, 20, 810, 620), loaded.Slots[0].Identity?.Bounds);
+    }
+
+    [Fact]
+    public void Save_ReplacesStateWithoutLeavingTemporaryFiles()
+    {
+        new AppState { AutoAddApps = ["chrome"] }.Save();
+        new AppState { AutoAddApps = ["outlook"] }.Save();
+
+        Assert.Equal(["outlook"], AppState.Load().AutoAddApps);
+        Assert.Equal([_statePath], Directory.GetFiles(_tempDirectory));
+    }
+
+    [Fact]
+    public void Save_KeepsRulesWhenWindowGeometryIsUnavailable()
+    {
+        new AppState
+        {
+            Geometry = WindowGeometry.FromBounds(double.PositiveInfinity, double.PositiveInfinity,
+                double.NegativeInfinity, double.NegativeInfinity, false),
+            AutoAddApps = ["chrome"]
+        }.Save();
+
+        AppState loaded = AppState.Load();
+        Assert.Null(loaded.Geometry);
+        Assert.Equal(["chrome"], loaded.AutoAddApps);
     }
 
     [Fact]
@@ -87,6 +112,21 @@ public sealed class AppStateTests : IDisposable
         Assert.Equal("chrome", slot.ProcessName);
         Assert.Equal("old title", slot.Title);
         Assert.Null(slot.Identity);
+    }
+
+    [Fact]
+    public void Load_IgnoresOldWindowBoundsWithoutLosingIdentity()
+    {
+        Directory.CreateDirectory(_tempDirectory);
+        File.WriteAllText(_statePath, """
+            {"Slots":[{"ProcessName":"chrome","Title":"WhatsApp","Identity":{
+                "WindowClassName":"Chrome_WidgetWin_1","Bounds":{"Left":0,"Top":0,"Right":800,"Bottom":600}
+            }}]}
+            """);
+
+        SlotState slot = Assert.Single(AppState.Load().Slots);
+        Assert.Equal("WhatsApp", slot.Title);
+        Assert.Equal("Chrome_WidgetWin_1", slot.Identity?.WindowClassName);
     }
 
     [Fact]

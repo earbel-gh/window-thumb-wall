@@ -41,6 +41,8 @@ public partial class MainWindow : Window
 
     private bool _isFullScreen;
     private int? _slotAwaitingWindowSelection;
+    private readonly HashSet<ThumbnailSlot> _pinsNeedingChoice = [];
+    private sealed record SpecificWindowRow(ThumbnailSlot Slot, string Label);
     private WindowStyle _savedWindowStyle;
     private WindowState _savedWindowState;
     private GridLength _savedLeftColWidth;
@@ -207,14 +209,8 @@ public partial class MainWindow : Window
         var state = new AppState
         {
             IsFullScreen = _isFullScreen,
-            Geometry = new WindowGeometry
-            {
-                Left = bounds.Left,
-                Top = bounds.Top,
-                Width = bounds.Width,
-                Height = bounds.Height,
-                IsMaximized = !_isFullScreen && WindowState == WindowState.Maximized
-            },
+            Geometry = WindowGeometry.FromBounds(bounds.Left, bounds.Top, bounds.Width, bounds.Height,
+                !_isFullScreen && WindowState == WindowState.Maximized),
             LeftPanelWidth = GetPersistedLength(
                 _isFullScreen ? _savedLeftColWidth : LeftColumnDefinition.Width,
                 LeftPanel.ActualWidth),
@@ -226,17 +222,12 @@ public partial class MainWindow : Window
         {
             if (slot.IsOccupied)
             {
-                WindowIdentity? identity = slot.Identity;
-                WindowBounds? currentBounds = WindowIdentity.CaptureBounds(slot.SourceHwnd);
-                if (identity != null && currentBounds != null)
-                    identity.Bounds = currentBounds;
-
                 state.Slots.Add(new SlotState
                 {
                     ProcessName = slot.SourceProcessName,
                     Title = slot.SourceTitle,
                     IsPinned = slot.IsPinned,
-                    Identity = identity
+                    Identity = slot.Identity
                 });
             }
             else if (slot.UnresolvedState is SlotState unresolved)
@@ -264,6 +255,13 @@ public partial class MainWindow : Window
         SaveState();
     }
 
+    private void SaveRuleChange()
+    {
+        if (!_stateTrackingEnabled) return;
+        _stateSaveTimer.Stop();
+        SaveState();
+    }
+
     private void RestorePanelLayout()
     {
         if (_pendingRestore == null) return;
@@ -279,7 +277,7 @@ public partial class MainWindow : Window
     {
         if (gridLength.IsAbsolute && gridLength.Value > 0)
             return gridLength.Value;
-        return actualFallback > 0 ? actualFallback : 0;
+        return double.IsFinite(actualFallback) && actualFallback > 0 ? actualFallback : 0;
     }
 
     private void RestoreAutoAddApps()
@@ -298,31 +296,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Enumerate all current windows.
-        var allWindows = new List<WindowInfo>();
-        NativeMethods.EnumWindows((hWnd, _) =>
-        {
-            if (hWnd == _mainHwnd) return true;
-            if (!NativeMethods.IsAltTabWindow(hWnd)) return true;
-            allWindows.Add(new WindowInfo
-            {
-                Handle = hWnd,
-                Title = NativeMethods.GetWindowTitle(hWnd),
-                ProcessName = NativeMethods.GetProcessName(hWnd),
-                Identity = WindowIdentity.Capture(hWnd)
-            });
-            return true;
-        }, IntPtr.Zero);
+        // Older saves didn't distinguish manual slots from app-wide additions.
+        foreach (SlotState saved in state.Slots)
+            if (saved.Identity == null && !_autoAddAppSet.Contains(saved.ProcessName))
+                saved.IsPinned = true;
 
-        IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match(state.Slots, allWindows);
+        var needsChoice = new HashSet<int>();
+        var matches = WindowRestoreMatcher.Match(state.Slots, CaptureRestoreCandidates(state.Slots), needsChoice);
         for (int i = 0; i < state.Slots.Count; i++)
         {
+            SlotState saved = state.Slots[i];
+            if (!saved.IsPinned && !matches.ContainsKey(i))
+                continue;
+
             int idx = AddSlot();
-            if (matches.TryGetValue(i, out WindowInfo? match))
-                AssignSlot(idx, match, state.Slots[i].IsPinned);
-            else
-                SetUnresolvedSlot(idx, state.Slots[i]);
+            if (!matches.TryGetValue(i, out WindowInfo? match) ||
+                !AssignSlot(idx, match, saved.IsPinned))
+            {
+                if (saved.IsPinned)
+                    SetUnresolvedSlot(idx, saved, needsChoice.Contains(i));
+                else
+                    RemoveSlot(idx);
+            }
         }
+        RefreshSpecificWindowsList();
 
         if (state.IsFullScreen && _slots.Count > 0)
             ToggleFullScreen();
@@ -336,6 +333,10 @@ public partial class MainWindow : Window
     {
         switch (e.Key)
         {
+            case Key.Escape when _slotAwaitingWindowSelection != null:
+                EndWindowChoice();
+                e.Handled = true;
+                break;
             case Key.Enter when _isFullScreen || !FilterBox.IsFocused:
                 ToggleFullScreen();
                 e.Handled = true;
@@ -504,10 +505,10 @@ public partial class MainWindow : Window
 
         IntPtr sourceHwnd = _slots[idx].SourceHwnd;
         ClearWindowAttentionState(sourceHwnd);
+        _pinsNeedingChoice.Remove(_slots[idx]);
         if (_slotAwaitingWindowSelection == idx)
         {
-            _slotAwaitingWindowSelection = null;
-            FilterLabel.Text = LocalizedText.Get("label.filter");
+            EndWindowChoice();
         }
         else if (_slotAwaitingWindowSelection is int waitingIndex && waitingIndex > idx)
         {
@@ -526,6 +527,7 @@ public partial class MainWindow : Window
         _cellHitLayers.RemoveAt(idx);
         _cellHosts.RemoveAt(idx);
         _slots.RemoveAt(idx);
+        RefreshSpecificWindowsList();
         _slotAttentionVisualStates.RemoveAt(idx);
         SyncActiveSourceWindow(forceRefresh: true);
 
@@ -602,16 +604,17 @@ public partial class MainWindow : Window
     private void Timer_Tick(object? sender, EventArgs e)
     {
         RefreshWindowList();
+        ValidateSlots();
         SyncMonitoredSlotTitles();
 
         _autoAddMaintenanceTick++;
         if (_autoAddMaintenanceTick >= AutoAddMaintenanceIntervalTicks)
         {
             _autoAddMaintenanceTick = 0;
+            RetrySpecificWindowRules();
             RefreshAutoAddAppDisplayNames();
             AutoAddWindowsForRegisteredApps();
         }
-        ValidateSlots();
         RecoverMissingThumbnailRegistrations();
         SyncActiveSourceWindow();
         CheckFlashState();
@@ -664,7 +667,10 @@ public partial class MainWindow : Window
         }
 
         if (changed)
+        {
+            RefreshSpecificWindowsList();
             RequestStateSave();
+        }
     }
 
     private void FilterBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyFilter();
@@ -688,15 +694,17 @@ public partial class MainWindow : Window
 
     private void WindowList_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (WindowList.SelectedItem is not WindowInfo info) return;
-        if (_slotAwaitingWindowSelection is int slotIndex)
-            ResolveUnresolvedSlot(slotIndex, info);
-        else
-            PinWindowToMonitor(info);
+        if (_slotAwaitingWindowSelection == null &&
+            e.ChangedButton == MouseButton.Left &&
+            FindVisualParent<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is WindowInfo info)
+            AddWindowToMonitor(info);
     }
 
     private bool PinWindowToMonitor(WindowInfo info)
     {
+        if (string.IsNullOrWhiteSpace(info.ProcessName))
+            return false;
+
         ThumbnailSlot? existingSlot = _slots.FirstOrDefault(slot =>
             slot.IsOccupied && slot.SourceHwnd == info.Handle);
         if (existingSlot != null)
@@ -709,26 +717,225 @@ public partial class MainWindow : Window
             return false;
         }
 
+        bool replaced = _autoAddAppSet.Contains(info.ProcessName);
         RemoveAppFromAutoList(info.ProcessName);
+        RefreshSpecificWindowsList();
+        SaveRuleChange();
+        if (replaced)
+            ShowRuleNotice("rule.replacedApp", info.ProcessName);
         return true;
     }
 
     private bool ResolveUnresolvedSlot(int slotIndex, WindowInfo info)
     {
-        if (slotIndex < 0 || slotIndex >= _slots.Count || !_slots[slotIndex].IsUnresolved ||
-            _slots.Any(slot => slot.IsOccupied && slot.SourceHwnd == info.Handle))
+        if (slotIndex < 0 || slotIndex >= _slots.Count || !_slots[slotIndex].IsUnresolved)
+            return false;
+
+        int existingIndex = FindSlotIndexBySourceHwnd(info.Handle);
+        if (_autoAddAppSet.Contains(info.ProcessName) || (existingIndex >= 0 && _slots[existingIndex].IsPinned))
+            return false;
+        if (!TryRestoreSpecificSlot(slotIndex, info))
+            return false;
+
+        EndWindowChoice();
+        if (existingIndex >= 0)
         {
+            RemoveSlot(existingIndex);
+            RequestThumbnailRegistrationRefresh(info.Handle, bypassCooldown: true);
+        }
+        SaveRuleChange();
+        return true;
+    }
+
+    private void RegisterAppRule(WindowInfo info)
+    {
+        if (string.IsNullOrWhiteSpace(info.ProcessName))
+        {
+            ShowRuleNotice("rule.cannotAdd");
+            return;
+        }
+
+        AddAppToAutoList(info.ProcessName, ResolveDisplayNameFromWindow(info.Handle, info.ProcessName));
+        bool replaced = false;
+        for (int i = _slots.Count - 1; i >= 0; i--)
+        {
+            ThumbnailSlot slot = _slots[i];
+            string processName = slot.UnresolvedState?.ProcessName ?? slot.SourceProcessName;
+            if (!slot.IsPinned || !string.Equals(processName, info.ProcessName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            replaced = true;
+            if (slot.IsUnresolved)
+                RemoveSlot(i);
+            else
+                slot.Unpin();
+        }
+
+        if (replaced)
+        {
+            RefreshSpecificWindowsList();
+            RequestStateSave();
+            ShowRuleNotice("rule.replacedSpecific", info.ProcessName);
+        }
+        SaveRuleChange();
+    }
+
+    private IReadOnlyList<WindowInfo> CaptureRestoreCandidates(IEnumerable<SlotState> slots)
+    {
+        var processes = slots.Select(slot => slot.ProcessName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return _windowCache.Where(window => processes.Contains(window.ProcessName))
+            .Select(window => new WindowInfo
+            {
+                Handle = window.Handle,
+                Title = window.Title,
+                ProcessName = window.ProcessName,
+                Identity = WindowIdentity.Capture(window.Handle)
+            })
+            .ToArray();
+    }
+
+    private void RetrySpecificWindowRules()
+    {
+        var pending = _slots.Select((slot, index) => (State: slot.UnresolvedState, Index: index))
+            .Where(item => item.State is { IsPinned: true })
+            .Select(item => (State: item.State!, item.Index)).ToArray();
+        if (pending.Length == 0)
+            return;
+
+        SlotState[] states = pending.Select(item => item.State).ToArray();
+        var needsChoice = new HashSet<int>();
+        var matches = WindowRestoreMatcher.Match(states, CaptureRestoreCandidates(states), needsChoice);
+        for (int i = 0; i < pending.Length; i++)
+        {
+            int index = pending[i].Index;
+            if (_slotAwaitingWindowSelection == index)
+                continue;
+
+            if (matches.TryGetValue(i, out var match))
+            {
+                if (FindSlotIndexBySourceHwnd(match.Handle) < 0 && TryRestoreSpecificSlot(index, match))
+                    continue;
+                needsChoice.Add(i);
+            }
+
+            UpdateWaitingStatus(index, needsChoice.Contains(i));
+        }
+        RefreshSpecificWindowsList();
+    }
+
+    private bool TryRestoreSpecificSlot(int index, WindowInfo info)
+    {
+        SlotState saved = _slots[index].UnresolvedState!;
+        bool neededChoice = _pinsNeedingChoice.Contains(_slots[index]);
+        if (!AssignSlot(index, info, isPinned: true))
+        {
+            SetUnresolvedSlot(index, saved, neededChoice);
             return false;
         }
 
-        if (!AssignSlot(slotIndex, info, isPinned: true))
-            return false;
-
-        _slotAwaitingWindowSelection = null;
-        FilterLabel.Text = LocalizedText.Get("label.filter");
-        RemoveAppFromAutoList(info.ProcessName);
+        _pinsNeedingChoice.Remove(_slots[index]);
+        RefreshSpecificWindowsList();
         RequestStateSave();
         return true;
+    }
+
+    private void UpdateWaitingStatus(int index, bool needsChoice)
+    {
+        ThumbnailSlot slot = _slots[index];
+        SlotState saved = slot.UnresolvedState!;
+        if (needsChoice)
+            _pinsNeedingChoice.Add(slot);
+        else
+            _pinsNeedingChoice.Remove(slot);
+
+        string title = string.IsNullOrWhiteSpace(saved.Title) ? saved.ProcessName : saved.Title;
+        _cellLabels[index].Text = string.Format(
+            LocalizedText.Get(needsChoice ? "slot.unresolved" : "slot.waiting"), title);
+    }
+
+    private void RefreshSpecificWindowsList()
+    {
+        ThumbnailSlot? selected = (SpecificWindowsList.SelectedItem as SpecificWindowRow)?.Slot;
+        SpecificWindowRow[] rows = _slots.Select((slot, index) => (slot, index))
+            .Where(item => item.slot.IsPinned)
+            .Select(item => new SpecificWindowRow(item.slot, _cellLabels[item.index].Text))
+            .ToArray();
+        if (SpecificWindowsList.ItemsSource is SpecificWindowRow[] current && current.SequenceEqual(rows))
+            return;
+
+        SpecificWindowsList.ItemsSource = rows;
+        SpecificWindowsList.SelectedItem = rows.FirstOrDefault(row => row.Slot == selected);
+    }
+
+    private void SpecificWindowsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var row = SpecificWindowsList.SelectedItem as SpecificWindowRow;
+        for (int i = 0; i < _slots.Count; i++)
+            _cellLabels[i].Background = _slots[i] == row?.Slot ? Brushes.DimGray : null;
+    }
+
+    private void SpecificWindowsList_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        var item = FindVisualParent<ListBoxItem>(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is not SpecificWindowRow row)
+            return;
+
+        item.IsSelected = true;
+        var menu = new ContextMenu { PlacementTarget = item };
+        if (row.Slot.IsUnresolved)
+        {
+            var chooseItem = new MenuItem { Header = LocalizedText.Get("menu.chooseWindow") };
+            chooseItem.Click += (_, _) => BeginWindowChoice(_slots.IndexOf(row.Slot));
+            menu.Items.Add(chooseItem);
+        }
+
+        var removeItem = new MenuItem { Header = LocalizedText.Get("menu.removeAutoAdd") };
+        removeItem.Click += (_, _) => RemoveSpecificWindowRule(row.Slot);
+        menu.Items.Add(removeItem);
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void RemoveSpecificWindowRule(ThumbnailSlot slot)
+    {
+        if (!_slots.Contains(slot))
+            return;
+
+        if (slot.IsUnresolved)
+            RemoveSlot(_slots.IndexOf(slot));
+        else
+        {
+            slot.Unpin();
+            RefreshSpecificWindowsList();
+            RequestStateSave();
+        }
+        SaveRuleChange();
+    }
+
+    private void BeginWindowChoice(int index)
+    {
+        if (index < 0 || index >= _slots.Count || !_slots[index].IsUnresolved)
+            return;
+
+        if (_isFullScreen)
+            ToggleFullScreen();
+        _slotAwaitingWindowSelection = index;
+        FilterLabel.Text = LocalizedText.Get("label.chooseWindowForSlot");
+        RuleNotice.Visibility = Visibility.Collapsed;
+        FilterBox.Focus();
+    }
+
+    private void EndWindowChoice()
+    {
+        _slotAwaitingWindowSelection = null;
+        FilterLabel.Text = LocalizedText.Get("label.filter");
+        RuleNotice.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowRuleNotice(string key, params object[] args)
+    {
+        RuleNotice.Text = string.Format(LocalizedText.Get(key), args);
+        RuleNotice.Visibility = Visibility.Visible;
     }
 
     private bool AddWindowToMonitor(WindowInfo info, int? insertIndex = null, bool isPinned = false)
@@ -784,7 +991,8 @@ public partial class MainWindow : Window
             return false;
 
         // No free slot -> add a new one.
-        if (target == _slots.Count)
+        bool appended = target == _slots.Count;
+        if (appended)
             target = AddSlot();
 
         if (AssignSlot(target, info, isPinned))
@@ -793,6 +1001,8 @@ public partial class MainWindow : Window
             return true;
         }
 
+        if (appended)
+            RemoveSlot(target);
         return false;
     }
 
@@ -814,12 +1024,34 @@ public partial class MainWindow : Window
         if (list.SelectedItem is not WindowInfo info) return;
 
         var menu = new ContextMenu();
+        if (_slotAwaitingWindowSelection != null)
+        {
+            var useItem = new MenuItem { Header = LocalizedText.Get("button.useWindow") };
+            useItem.Click += (_, _) =>
+            {
+                if (_slotAwaitingWindowSelection is int currentIndex &&
+                    !ResolveUnresolvedSlot(currentIndex, info))
+                    ShowRuleNotice("rule.cannotChoose");
+            };
+            menu.Items.Add(useItem);
+            var cancelItem = new MenuItem { Header = LocalizedText.Get("button.cancel") };
+            cancelItem.Click += (_, _) => EndWindowChoice();
+            menu.Items.Add(cancelItem);
+            menu.PlacementTarget = item;
+            menu.IsOpen = true;
+            e.Handled = true;
+            return;
+        }
         var addToMonitorItem = new MenuItem { Header = LocalizedText.Get("menu.addToMonitor") };
-        addToMonitorItem.Click += (_, _) => PinWindowToMonitor(info);
+        addToMonitorItem.Click += (_, _) =>
+        {
+            if (!PinWindowToMonitor(info))
+                ShowRuleNotice("rule.cannotAdd");
+        };
 
         var addAppItem = new MenuItem { Header = LocalizedText.Get("menu.addApp") };
         addAppItem.Click += (_, _) =>
-            AddAppToAutoList(info.ProcessName, ResolveDisplayNameFromWindow(info.Handle, info.ProcessName));
+            RegisterAppRule(info);
 
         menu.Items.Add(addToMonitorItem);
         menu.Items.Add(addAppItem);
@@ -850,7 +1082,11 @@ public partial class MainWindow : Window
         moveDownItem.Click += (_, _) => MoveAutoApp(index, index + 1);
 
         var removeItem = new MenuItem { Header = LocalizedText.Get("menu.removeAutoAdd") };
-        removeItem.Click += (_, _) => RemoveAppFromAutoList(app.ProcessName);
+        removeItem.Click += (_, _) =>
+        {
+            RemoveAppFromAutoList(app.ProcessName);
+            SaveRuleChange();
+        };
         menu.Items.Add(moveUpItem);
         menu.Items.Add(moveDownItem);
         menu.Items.Add(removeItem);
@@ -915,7 +1151,7 @@ public partial class MainWindow : Window
         AutoAddAppEntry item = _autoAddApps[sourceIndex];
         _autoAddApps.RemoveAt(sourceIndex);
         _autoAddApps.Insert(targetIndex, item);
-        RequestStateSave();
+        SaveRuleChange();
     }
 
     private void AppList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1151,11 +1387,11 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void SetUnresolvedSlot(int idx, SlotState saved)
+    private void SetUnresolvedSlot(int idx, SlotState saved, bool needsChoice = false)
     {
         _slots[idx].SetUnresolved(saved);
-        string title = string.IsNullOrWhiteSpace(saved.Title) ? saved.ProcessName : saved.Title;
-        _cellLabels[idx].Text = string.Format(LocalizedText.Get("slot.unresolved"), title);
+        UpdateWaitingStatus(idx, needsChoice);
+        RefreshSpecificWindowsList();
         _cellLabels[idx].Foreground = Brushes.Orange;
         _cellBorders[idx].ToolTip = LocalizedText.Get("menu.chooseWindow");
         UpdateSlotAttentionVisual(idx);
@@ -1385,11 +1621,7 @@ public partial class MainWindow : Window
         if (idx < _slots.Count && _slots[idx].IsUnresolved)
         {
             var chooseWindowItem = new MenuItem { Header = LocalizedText.Get("menu.chooseWindow") };
-            chooseWindowItem.Click += (_, _) =>
-            {
-                _slotAwaitingWindowSelection = idx;
-                FilterLabel.Text = LocalizedText.Get("label.chooseWindowForSlot");
-            };
+            chooseWindowItem.Click += (_, _) => BeginWindowChoice(idx);
             menu.Items.Add(chooseWindowItem);
         }
 
@@ -1470,6 +1702,7 @@ public partial class MainWindow : Window
         MoveItem(_cellHitLayers, sourceIndex, targetIndex);
         MoveItem(_cellHosts, sourceIndex, targetIndex);
         MoveItem(_slots, sourceIndex, targetIndex);
+        RefreshSpecificWindowsList();
         MoveItem(_slotAttentionVisualStates, sourceIndex, targetIndex);
 
         for (int idx = 0; idx < _cellBorders.Count; idx++)
