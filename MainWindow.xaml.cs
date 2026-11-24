@@ -80,6 +80,7 @@ public partial class MainWindow : Window
     }
 
     private AppState? _pendingRestore;
+    private readonly bool _canSaveState;
     private bool _stateTrackingEnabled;
     private bool _gridRebuildPending;
     private bool _thumbnailUpdatePending;
@@ -97,7 +98,8 @@ public partial class MainWindow : Window
         ApplyLocalization();
 
         // Restore window geometry before the window is shown.
-        _pendingRestore = AppState.Load();
+        _pendingRestore = AppState.Load(out _canSaveState);
+        StateNotice.Visibility = _canSaveState ? Visibility.Collapsed : Visibility.Visible;
         _notificationAttentionRequested = _pendingRestore.EnableOsNotificationAttention;
         _notificationAttentionEnabled = _notificationAttentionRequested && SupportsNotificationAttentionRuntime();
         if (_pendingRestore.Geometry is { Width: > 0, Height: > 0 } geo)
@@ -202,6 +204,9 @@ public partial class MainWindow : Window
 
     private void SaveState()
     {
+        if (!_canSaveState)
+            return;
+
         var bounds = (WindowState == WindowState.Maximized || _isFullScreen)
             ? RestoreBounds
             : new Rect(Left, Top, Width, Height);
@@ -296,25 +301,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Older saves didn't distinguish manual slots from app-wide additions.
-        foreach (SlotState saved in state.Slots)
-            if (saved.Identity == null && !_autoAddAppSet.Contains(saved.ProcessName))
-                saved.IsPinned = true;
-
         var needsChoice = new HashSet<int>();
         var matches = WindowRestoreMatcher.Match(state.Slots, CaptureRestoreCandidates(state.Slots), needsChoice);
         for (int i = 0; i < state.Slots.Count; i++)
         {
             SlotState saved = state.Slots[i];
-            if (!saved.IsPinned && !matches.ContainsKey(i))
+            bool needsLegacyChoice = saved.Identity == null && !saved.IsPinned;
+            if (!saved.IsPinned && !needsLegacyChoice && !matches.ContainsKey(i))
                 continue;
 
             int idx = AddSlot();
             if (!matches.TryGetValue(i, out WindowInfo? match) ||
                 !AssignSlot(idx, match, saved.IsPinned))
             {
-                if (saved.IsPinned)
-                    SetUnresolvedSlot(idx, saved, needsChoice.Contains(i));
+                if (saved.IsPinned || needsLegacyChoice)
+                    SetUnresolvedSlot(idx, saved, needsLegacyChoice || needsChoice.Contains(i));
                 else
                     RemoveSlot(idx);
             }
@@ -732,9 +733,10 @@ public partial class MainWindow : Window
             return false;
 
         int existingIndex = FindSlotIndexBySourceHwnd(info.Handle);
-        if (_autoAddAppSet.Contains(info.ProcessName) || (existingIndex >= 0 && _slots[existingIndex].IsPinned))
+        if ((_slots[slotIndex].IsPinned && _autoAddAppSet.Contains(info.ProcessName)) ||
+            (existingIndex >= 0 && _slots[existingIndex].IsPinned))
             return false;
-        if (!TryRestoreSpecificSlot(slotIndex, info))
+        if (!TryResolveSlot(slotIndex, info))
             return false;
 
         EndWindowChoice();
@@ -813,7 +815,7 @@ public partial class MainWindow : Window
 
             if (matches.TryGetValue(i, out var match))
             {
-                if (FindSlotIndexBySourceHwnd(match.Handle) < 0 && TryRestoreSpecificSlot(index, match))
+                if (FindSlotIndexBySourceHwnd(match.Handle) < 0 && TryResolveSlot(index, match))
                     continue;
                 needsChoice.Add(i);
             }
@@ -823,11 +825,11 @@ public partial class MainWindow : Window
         RefreshSpecificWindowsList();
     }
 
-    private bool TryRestoreSpecificSlot(int index, WindowInfo info)
+    private bool TryResolveSlot(int index, WindowInfo info)
     {
         SlotState saved = _slots[index].UnresolvedState!;
         bool neededChoice = _pinsNeedingChoice.Contains(_slots[index]);
-        if (!AssignSlot(index, info, isPinned: true))
+        if (!AssignSlot(index, info, saved.IsPinned))
         {
             SetUnresolvedSlot(index, saved, neededChoice);
             return false;

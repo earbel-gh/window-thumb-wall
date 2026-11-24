@@ -48,6 +48,9 @@ WindowThumbWall is a Windows desktop app for building a live thumbnail wall from
 Automatic addition uses a stable order close to the Windows taskbar, not an exact taskbar-order readout. Windows that were already open when WindowThumbWall starts receive a best-effort initial order from available window state. Windows created afterwards retain their observed creation order. Already monitored windows are never automatically rearranged, and later manual taskbar rearrangement is not tracked.
 
 ## Quick Start
+
+After an upgrade, previous wall entries without window identity remain in place. Use **Choose window** on a waiting cell to reconnect it without creating an auto-add rule. If the settings file cannot be read, the app displays a warning and preserves the original file for the session.
+
 1. Launch WindowThumbWall.
 2. Double-click an open window to add just that window to the wall without creating a rule. Right-click an open window to create a specific-window or app-wide auto-add rule. Right-click saved rules below the picker to remove them or choose a replacement window.
 3. Click a thumbnail to bring the original window to the foreground.
