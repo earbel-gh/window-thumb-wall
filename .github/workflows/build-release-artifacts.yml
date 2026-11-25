@@ -13,6 +13,10 @@ on:
         description: Test the published v0.6.10 MSI upgrade on the hosted runner
         type: boolean
         default: false
+      verify_store_package:
+        description: Build and verify the Microsoft Store upload package without signing in or submitting
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -136,6 +140,16 @@ jobs:
       - name: Test Store draft protection
         shell: pwsh
         run: .\packaging\test-verify-store-submission-slot.ps1
+
+      - name: Test tag verification, draft recovery and release preflight
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -File .\packaging\test-verify-release-tag.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Signed-tag verification fixtures failed.' }
+          pwsh -NoLogo -NoProfile -File .\packaging\test-reconcile-github-release.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub draft recovery fixtures failed.' }
+          pwsh -NoLogo -NoProfile -File .\packaging\test-verify-release-preflight.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Release preflight fixtures failed.' }
 
       - name: Install WiX
         run: |
@@ -417,6 +431,20 @@ jobs:
       SELLER_ID: ${{ secrets.SELLER_ID }}
       AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
       AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+
+  store-package-check:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_store_package
+    needs: build
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/release-to-store.yml
+    with:
+      package_only: true
+      tag: ''
+      tag_object: ''
+      commit: ${{ needs.build.outputs.commit }}
+      tree: ${{ needs.build.outputs.tree }}
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
