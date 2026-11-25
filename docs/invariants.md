@@ -21,7 +21,7 @@ These rules define the non-negotiable project constraints for WindowThumbWall.
 ## Window wall state
 
 - Rule IDs identify the user's specific auto-add choices. Slot IDs identify ordered wall locations. A manual slot survives loss of its current window, and a registration can outlive removal of its wall slot. A numeric HWND reused after destruction is a new observed lifetime and cannot inherit the previous source binding.
-- Keep the chosen title and identity as restoration anchors. Live HWND, process lifetime and observed title are runtime evidence. A successful automatic match can update last-binding evidence while preserving the chosen anchors.
+- Keep the chosen title and identity as restoration anchors. Live HWND, process lifetime and observed title are runtime evidence. A saved HWND can support a matching meaningful title and strong app identity during restoration. A detached rule keeps its title and app identity when it recreates a slot. A successful automatic match can update last-binding evidence while preserving the chosen anchors.
 - Register the replacement DWM thumbnail before dropping the previous registration or changing the target. A user-selected live correction must be validated against the current observed HWND lifetime before binding. Apply deferred selection and menu actions to their current slot ID.
 - Protect unreadable settings, keep the original bytes before schema migration, and require the loaded file revision to match before writing. A stale instance can export its changes to a new recovery file.
 

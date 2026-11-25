@@ -81,12 +81,15 @@ public sealed class SettingsWindow : Window
         root.Children.Add(footer);
 
         Content = root;
-        Loaded += (_, _) =>
-        {
-            MinWidth = ActualWidth;
-            MinHeight = ActualHeight;
-            SizeToContent = SizeToContent.Manual;
-        };
+        Loaded += (_, _) => KeepInitialWidthAndGrowHeight(ActualWidth, ActualHeight);
+    }
+
+    internal void KeepInitialWidthAndGrowHeight(double initialWidth, double initialHeight)
+    {
+        Width = initialWidth;
+        MinWidth = initialWidth;
+        MinHeight = initialHeight;
+        SizeToContent = SizeToContent.Height;
     }
 
     internal void UpdateNotificationAvailability(string availabilityText) =>

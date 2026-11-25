@@ -190,6 +190,7 @@ internal static class WindowRestoreMatcher
 
     private static bool IsValidatedHandleMatch(SlotState saved, WindowInfo window)
     {
+
         if ((saved.LastBindingIdentity ?? saved.Identity) is not
                 {
                     Handle: long savedHandle
@@ -202,10 +203,19 @@ internal static class WindowRestoreMatcher
             return false;
         }
 
-        return savedHandle != 0 && savedHandle == currentHandle &&
-            savedHandle == window.Handle.ToInt64() &&
-            IsSameProcessInstance(savedIdentity, currentIdentity) &&
-            MatchesStoredStrongFields(savedIdentity, currentIdentity);
+        if (savedHandle == 0 || savedHandle != currentHandle ||
+            savedHandle != window.Handle.ToInt64() ||
+            !IsSameProcessInstance(savedIdentity, currentIdentity) ||
+            !MatchesStrongEvidence(saved, window) ||
+            !MatchesStoredStrongFields(savedIdentity, currentIdentity))
+        {
+            return false;
+        }
+
+        // A saved HWND may have been reused by the same process while unobserved.
+        string savedTitle = NormalizeTitle(saved.Title, saved.ProcessName);
+        return IsMeaningfulTitle(savedTitle) &&
+            string.Equals(savedTitle, NormalizeTitle(window.Title, window.ProcessName), StringComparison.Ordinal);
     }
 
     internal static bool IsSameProcessInstance(WindowIdentity saved, WindowIdentity current) =>
