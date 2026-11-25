@@ -9,7 +9,8 @@
            Compressed="yes"
            InstallerVersion="500">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of WindowThumbWall is already installed." />
+    <MajorUpgrade Schedule="afterInstallExecute"
+                  DowngradeErrorMessage="A newer version of WindowThumbWall is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- Install directory -->

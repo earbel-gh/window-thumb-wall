@@ -7,9 +7,11 @@ namespace WindowThumbWall;
 
 public sealed class SettingsWindow : Window
 {
+    private readonly TextBlock _notificationAvailabilityText = new();
+
     public SettingsWindow(
         bool osNotificationAttentionEnabled,
-        bool notificationAttentionSupported,
+        string notificationAvailabilityText,
         Action<bool> onNotificationAttentionChanged)
     {
         ArgumentNullException.ThrowIfNull(onNotificationAttentionChanged);
@@ -45,21 +47,16 @@ public sealed class SettingsWindow : Window
         };
         notificationCheckBox.Checked += (_, _) => onNotificationAttentionChanged(true);
         notificationCheckBox.Unchecked += (_, _) => onNotificationAttentionChanged(false);
-        notificationCheckBox.IsEnabled = notificationAttentionSupported;
         Grid.SetRow(notificationCheckBox, 1);
 
-        var notificationHint = new TextBlock
-        {
-            Text = notificationAttentionSupported
-                ? LocalizedText.Get("setting.osNotifications.supportedHint")
-                : LocalizedText.Get("setting.osNotifications.requiresPackage.inline"),
-            Foreground = notificationAttentionSupported
-                ? Brushes.Gainsboro
-                : Brushes.Orange,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(24, -6, 0, 14),
-            MaxWidth = 360
-        };
+        _notificationAvailabilityText.Text = string.Format(
+            LocalizedText.Get("setting.osNotifications.availability"),
+            notificationAvailabilityText);
+        _notificationAvailabilityText.Foreground = Brushes.Gainsboro;
+        _notificationAvailabilityText.TextWrapping = TextWrapping.Wrap;
+        _notificationAvailabilityText.Margin = new Thickness(24, -6, 0, 14);
+        _notificationAvailabilityText.MaxWidth = 360;
+        var notificationHint = _notificationAvailabilityText;
         Grid.SetRow(notificationHint, 2);
 
         var footer = new Grid();
@@ -91,4 +88,9 @@ public sealed class SettingsWindow : Window
             SizeToContent = SizeToContent.Manual;
         };
     }
+
+    internal void UpdateNotificationAvailability(string availabilityText) =>
+        _notificationAvailabilityText.Text = string.Format(
+            LocalizedText.Get("setting.osNotifications.availability"),
+            availabilityText);
 }

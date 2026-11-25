@@ -2,6 +2,72 @@
 
 WindowThumbWall uses a tag-driven release flow. Pushing a version tag builds all three official package formats and generates release metadata for GitHub Releases and Microsoft Store copy.
 
+## Release Gate
+
+A normal push of a new `vX.Y.Z` tag is the release trigger. GitHub Actions verifies
+the annotated tag against the SSH signer list from protected main and binds the
+tag object to its commit and source tree. Windows tests, distribution builds and
+MSI lifecycle verification precede the Store operation. The Store job verifies
+its package and the tag again before submission. The draft GitHub Release
+requires the same successful run and verifies the release provenance and all
+downloaded package hashes before attaching CI assets. A manual build dispatch
+is for verification and does not create a draft or submit to the Store.
+
+The release run retains its provenance as a workflow artifact. It records the
+exact tag object, commit, tree, toolchain, and SHA-256 values and file sizes.
+Review the draft and actual Store submission separately before announcing the
+release. Store submission is followed by Microsoft certification.
+
+### Recovering a Partial GitHub Draft
+
+The GitHub job reconciles the draft for the exact signed tag after the Store
+job succeeds. The initial draft body carries an identity marker containing the
+tag, immutable annotated tag object, target commit, source tree, and SHA-256 of
+`release-provenance.json`. A retry requires that marker and the same tag and
+target commit. A published release, a mismatched marker or target, an unknown
+asset, or an asset with conflicting bytes stops recovery for owner review.
+
+The draft asset set is exactly the six ZIP, MSI, and MSIX packages for x64 and
+ARM64 plus `release-provenance.json`. The job verifies the local provenance
+manifest before contacting GitHub. It checks existing assets by GitHub SHA-256
+digest and size, or downloads and hashes the bytes when GitHub omits the digest.
+It uploads only missing assets, then reads the same release ID and asset set
+back before succeeding. Do not delete a conflicting asset or draft to force a
+retry.
+
+If the Store job already succeeded and the GitHub job failed, rerun only the
+failed GitHub job in the same workflow run. That reuses the successful Store
+result and reconciles the existing draft; it does not submit to the Store
+again. If an upload result was uncertain, the next run first reads the draft
+and its assets and proceeds only from that observed state. Manual workflow
+dispatch remains a build-and-verify path and never creates or repairs a draft.
+
+## Privacy Pages
+
+[Deploy Privacy Page](../.github/workflows/deploy-pages.yml) is an operational
+publication workflow for the English and Japanese privacy notices. Its automatic
+trigger is a main push affecting those notices or their Pages workflow. Its
+manual trigger also publishes to the `github-pages` environment. Treat this as a
+dedicated publication operation when changing or running it.
+
+## MSI upgrade check
+
+The signed-tag build checks both a fresh x64 install and an upgrade from the
+published v0.6.10 MSI on its isolated Windows runner. The upgrade keeps the
+shared cleanup component identity and schedules removal of the old product
+after the new install executes. Its check confirms the old ProductCode is
+gone, the new executable has the release version, and a legacy settings
+fixture remains byte-for-byte intact. A failed check holds both publication jobs.
+
+For pre-integration evidence, dispatch **Build Release Artifacts** on the exact
+candidate branch with `verify_previous_msi_upgrade` enabled. Its isolated
+x64 fixture uses the target 0.6.11 version and candidate source. The normal
+development outputs keep their existing version, and the dispatch cannot reach
+either publication job. The signed-tag build repeats the gate with the actual
+release MSI.
+
+The standalone CI MSIX is packed directly by MakeAppx. Its manifest declares the English and Japanese resource languages explicitly. The Visual Studio package project resolves its own resource placeholder during MSBuild.
+
 ## Distribution Invariant
 The official distribution formats are fixed.
 
@@ -29,7 +95,7 @@ How they are used:
 Each file can contain short markdown bullets or short prose describing what changed in that release. The metadata generator embeds that content into the generated release assets.
 
 ## Tag and Push
-1. Create a signed tag.
+1. Create an annotated tag with the repository's trusted SSH signer.
 
 ```bash
 git tag -s v0.2.3 -m "Release v0.2.3"
@@ -95,14 +161,19 @@ Use the generated files below when updating Partner Center manually:
 - `dist/store-whats-new-en.md`
 
 ## Microsoft Store Submission Automation
-For an existing live free Microsoft Store product, pushing a tag in the format `vX.Y.Z` triggers [release-to-store.yml](../.github/workflows/release-to-store.yml).
+For an existing live free Microsoft Store product, the signed-tag build calls
+[release-to-store.yml](../.github/workflows/release-to-store.yml) only after the
+required tests and distribution builds succeed.
 
 Behavior:
-1. The workflow validates the tag format.
+1. The workflow checks out the frozen commit and verifies the source tree.
 2. The three-part tag version is normalized to a four-part Store manifest version.
 3. The Windows Application Packaging Project is built as a Store upload package.
-4. The `.msixupload` package is uploaded through the Microsoft Store CLI as a draft submission.
-5. The workflow commits that draft submission as a separate step.
+4. The workflow verifies the bundle version and architectures, then records the
+   package SHA-256. It checks the frozen tag again before uploading the package
+   as a draft submission through the Microsoft Store CLI.
+5. The workflow rechecks the tag before committing the draft submission.
+   The GitHub draft job depends on this successful Store submission.
 
 Example:
 - `v0.4.2` becomes `0.4.2.0` inside the Store packaging workflow.
@@ -125,6 +196,11 @@ Reasoning:
 
 If you need to confirm the later Partner Center state, verify it separately in Partner Center or with a follow-up manual check.
 
+If an earlier run started creating or committing a Store submission, reconcile
+that submission in Partner Center before retrying. A draft GitHub Release
+failure after a successful Store job should be recovered from the failed
+GitHub job, with the same tag and package hashes.
+
 ## Store Workflow Prerequisites
 GitHub secrets:
 - `AZURE_AD_TENANT_ID`
@@ -143,10 +219,10 @@ The Azure AD app registration must already be authorized in Partner Center for t
 3. Add `packaging/release-notes-<version>.md` or the localized `release-notes-ja/en-<version>.md` files if the release has user-visible changes.
 4. Update [docs/notification-attention-design.md](notification-attention-design.md) if notification matching or visual attention behavior changed.
 5. Add `packaging/release-highlights-<version>.md` or localized variants if you want explicit highlights instead of fallback content.
-6. Create and push `vX.Y.Z`.
-7. Review the generated GitHub draft release body and rename the release title if you want the plain `X.Y.Z` convention.
-8. Publish the GitHub Release after checking attached ZIP, MSI, and MSIX artifacts.
-9. Confirm that the Store workflow created and committed the submission; if later status details are needed, verify them in Partner Center.
+6. Verify the required release evidence, then create and push the signed annotated `vX.Y.Z` tag.
+7. Read back the unchanged tag object, target commit, and source tree. Verify that the Store job committed its submission.
+8. Review the generated GitHub draft and check all six attached packages against the CI provenance hashes.
+9. Publish the verified draft. Track Store certification or availability separately in Partner Center.
 10. If you are updating the Microsoft Store listing text, copy from the generated Store metadata files.
 11. When packaging or notification behavior changed, run the local MSIX verification checklist in [developer-guide.md](developer-guide.md).
 

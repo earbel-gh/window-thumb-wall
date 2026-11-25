@@ -20,34 +20,35 @@ This document covers local development, packaging, and release-related reference
 
 ## Run Locally
 
-### Visual Studio
+### Deliberate Interactive Use
+When you intentionally want to interact with or debug the desktop app, use Visual Studio:
+
 1. Open [WindowThumbWall.sln](../WindowThumbWall.sln).
 2. Set WindowThumbWall as the startup project.
 3. Press F5 to debug or Ctrl+F5 to run.
 
-### CLI
-```powershell
-dotnet run --project WindowThumbWall.csproj
-```
-
-### Codex "Run" Dialog
-If Codex asks for a command to launch the app, use one of the following:
-
-- Normal local run:
+You can also deliberately launch the unpackaged app from a terminal:
 
 ```powershell
 dotnet run --project WindowThumbWall.csproj
 ```
 
-- Installed-package run for notification listener verification:
+### Agent Verification And Debugging
+Use [Build And Test Split](#build-and-test-split) for checks that can run without a window. Use the development launcher for checks that need the unpackaged application window:
 
 ```powershell
-.\packaging\build-and-run-msix.ps1 -Configuration Release
+dotnet build .\WindowThumbWall.csproj -c Release
+.\packaging\start-development.ps1 -Preflight
+$launch = .\packaging\start-development.ps1
+$launch | Select-Object ProcessId, DisplayDevice, StatePath
 ```
 
-Use the MSIX path when you need to verify packaged app identity or OS notification listener behavior. Use `dotnet run` for ordinary local UI work.
+Use PowerShell 7. The launcher resolves the Windows display device for Display 3, seeds the initial position before the first window is shown, suppresses activation for that first show, and writes each launch to a separate state directory. Pass `-StateSeedPath` to start with a copy of a test fixture or `-ExecutablePath` for a different build. When debugging a running development build, attach to the returned `ProcessId` from an existing debugger session. Use the returned path and process to inspect and clean up your own test instance.
+
+If Display 3 is unavailable or the current foreground window occupies it, the launcher refuses to start. Continue the checks that can run without a window. Do not force focus or synthesize user input. When a check requires source-window activation, use a deliberate, valid action through the running app and record the result. For installed-package verification, use an isolated Windows user or guest and the package checklist below.
+
 If you start the unpackaged `dotnet run` / `bin\Debug` build, the Settings window now keeps `Reflect OS notifications` disabled and explains that notification attention requires the installed MSIX runtime.
-The installed MSIX build does not use constant notification polling; it scans immediately when notification-change events arrive and keeps a 5-second follow-up reconciliation window for near-term toast updates.
+A healthy installed MSIX session uses notification-change events and a 5-second follow-up reconciliation window for near-term toast updates; a 30-second monitor checks permission only. If event subscription fails with RPC HRESULT `0x800706BE` after the initial baseline, the listener enters process-latched snapshot-only recovery. It reads immediately, then every 4 seconds after successful reads; consecutive read failures back off through 4, 8, 16, and 30 seconds. At most one read runs at a time. Recovery does not automatically resubscribe to events, and its snapshots can miss short-lived notifications. Turning the preference off and on starts a fresh baseline but remains snapshot-only until the process exits.
 
 ## Build And Test Split
 Use the supported command split below when working locally.
@@ -70,11 +71,17 @@ dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no
 
 ## Taskbar-Like Automatic Addition Order
 
+Automatic windows fill their planned position in the wall while preserving the relative order of existing slots. A saved manual slot remains available for correction while its source is missing. An app-wide rule can fill a uniquely matching legacy placeholder when the saved and eligible live titles agree. Competing claims remain unresolved.
+
+Use **Choose window** on a live or unresolved slot to replace its target. A new DWM registration must succeed before the app replaces the existing display. **Remove wall slot** removes the layout entry. Its specific auto-add rule stays available in the sidebar and can show its slot again. **Remove rule** removes the registration and keeps the slot.
+
+The first schema 2 save preserves the old settings in `state.json.pre-v2.bak`. A failed save is shown in the sidebar. Retry a transient failure there. If another instance saved a newer revision, save a recovery copy before restarting. A temporary file-sharing lock serializes writes to the same settings path across Windows sessions.
+
 Automatic addition has one persistent in-memory ordering tracker for the lifetime of the running application. At startup, the application seeds already-open eligible windows from the available Z-order state as a deterministic best-effort approximation. Windows observed through later Shell Hook create notifications are appended in observed creation order; destroy notifications remove them, so a reused numeric HWND receives a new position.
 
 The tracker is not rebuilt from the changing Z order on refresh. Candidate selection is separate: already monitored HWNDs are excluded before automatic insertion, so automatic maintenance never moves existing slots. Registered applications remain the outer ordering group in their configured registration order, while windows within each group use the tracker order. A window observed while hidden has its position retained until it later becomes eligible for the window list.
 
-Windows does not provide a supported API for enumerating the exact taskbar-item order. Manual taskbar rearrangement after WindowThumbWall starts is therefore not tracked. Do not add Explorer-private COM usage, taskbar scraping, undocumented Explorer internals, or UI Automation to simulate that capability. The tracker itself does not survive restart; saved monitored slots do, and are restored without automatic rearrangement.
+Windows does not provide a supported API for enumerating the exact taskbar-item order. Manual taskbar rearrangement after WindowThumbWall starts is therefore not tracked. Do not add Explorer-private COM usage, taskbar scraping, undocumented Explorer internals, or UI Automation to simulate that capability. Each observed HWND lifetime gets its own in-memory order entry. When Windows destroys a source, a manual saved slot remains at its wall position as an unresolved cell; an automatically added cell is removed. A reused numeric HWND receives a new observed lifetime and is not treated as the previous source. The tracker itself does not survive restart; saved manual slots do, and are restored without automatic rearrangement. Use **Choose window** to bind a deliberate live replacement to an unresolved slot. The current handle, process, class, and observed lifetime are checked before the replacement is accepted, and the existing DWM registration is replaced only after the new registration succeeds.
 
 The existing WPF-window Shell Hook is the event source. It is registered once after the main HWND exists and deregistered from `Closed`. `HSHELL_WINDOWCREATED` and `HSHELL_WINDOWDESTROYED` only update the tracker; the existing activation, redraw, and flash handling remains on the WPF thread.
 
@@ -104,8 +111,8 @@ After building the MSIX locally, install the newest signed test package with:
 .\packaging\install-msix.ps1
 ```
 
-### Build, Install, And Launch In One Step
-If you want a single entrypoint for Codex or local repeated runs, use:
+### Isolated Package Build, Install, And Launch
+Use this script only for isolated local MSIX package verification. It builds the package, installs or replaces the local package, and launches WindowThumbWall; it is not a normal or unattended app-launch command.
 
 ```powershell
 .\packaging\build-and-run-msix.ps1 -Configuration Release
@@ -141,7 +148,7 @@ Example PowerShell cleanup:
 Remove-Item -Recurse -Force artifacts, dist, dist-release-*, packaging\AppPackages, packaging\BundleArtifacts, packaging\local-register
 ```
 
-## Local MSIX Verification Checklist
+## Isolated Local MSIX Verification Checklist
 Use the checklist below when changing local packaging, install scripts, app identity, attention notifications, or taskbar integration.
 
 ### Packaging And Versioning
@@ -181,8 +188,9 @@ Use the checklist below when changing local packaging, install scripts, app iden
 3. Toggle fullscreen on and off and confirm the taskbar icon stays on the intended app icon instead of falling back to the generic document icon.
 
 ### Regression Gate
-1. Run `dotnet build WindowThumbWall.csproj`.
-2. Run `dotnet test WindowThumbWall.Tests\WindowThumbWall.Tests.csproj`.
+1. Run `dotnet build .\WindowThumbWall.csproj -c Release`.
+2. Run `dotnet build .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release`.
+3. Run `dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build`.
 
 ## Build Packages
 

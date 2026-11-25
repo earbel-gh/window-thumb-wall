@@ -38,7 +38,9 @@ WindowThumbWall is a Windows desktop app for building a live thumbnail wall from
 - Visual attention cues when a monitored window flashes in the taskbar or is matched from a Windows notification.
 - A white border that indicates which monitored source window is currently active.
 - Fullscreen mode for dedicated monitoring.
-- Automatic cleanup when source windows disappear.
+- Saved manual cells remain in place when their source windows disappear; automatically added cells are cleaned up with their source.
+- Add rules from **Open windows**. **Auto-add this window** replaces the app-wide rule; **Auto-add all windows from this app** replaces specific rules for that app. Replacing or removing a rule leaves open thumbnails on the current wall.
+- Specific rules wait for windows that open later. A validated live window restores regardless of its title. After a Windows restart, restore looks for a clearly matching title among windows with the same app identity, ignoring placement and a numeric unread-count prefix on WhatsApp browser titles. If a saved manual source window closes, its cell remains in place. Use **Choose window** to deliberately bind a current live window to that cell when automatic matching is uncertain.
 - Optional automatic addition for registered applications. Windows created while WindowThumbWall is running are added in their observed creation order within each application; registered applications stay in their configured order.
 
 ## Automatic Addition Order
@@ -46,8 +48,11 @@ WindowThumbWall is a Windows desktop app for building a live thumbnail wall from
 Automatic addition uses a stable order close to the Windows taskbar, not an exact taskbar-order readout. Windows that were already open when WindowThumbWall starts receive a best-effort initial order from available window state. Windows created afterwards retain their observed creation order. Already monitored windows are never automatically rearranged, and later manual taskbar rearrangement is not tracked.
 
 ## Quick Start
+
+After an upgrade, previous wall entries without window identity remain in place. Use **Choose window** on a waiting cell to reconnect it without creating an auto-add rule. If the settings file cannot be read, the app displays a warning and preserves the original file for the session.
+
 1. Launch WindowThumbWall.
-2. Double-click a window from the list to add it to the wall.
+2. Double-click an open window to add just that window to the wall without creating a rule. Right-click an open window to create a specific-window or app-wide auto-add rule. Right-click saved rules below the picker to remove them or choose a replacement window.
 3. Click a thumbnail to bring the original window to the foreground.
 4. Right-click a thumbnail to remove it.
 5. When a monitored app flashes on the taskbar or a Windows notification resolves to it uniquely, its thumbnail border flashes red in the wall.

@@ -85,7 +85,21 @@ internal static partial class NotificationWindowMatcher
         if (aumidMatches.Count > 0)
             return aumidMatches;
 
-        return NarrowByExecutableHints(candidates, signal);
+        string normalizedSourceAumid = NormalizeIdentity(signal.AppUserModelId);
+        IReadOnlyList<NotificationWindowCandidate> fallbackCandidates = candidates;
+        if (!string.IsNullOrEmpty(normalizedSourceAumid))
+        {
+            fallbackCandidates = candidates
+                .Where(window =>
+                {
+                    string normalizedCandidateAumid = NormalizeIdentity(window.AppUserModelId);
+                    return string.IsNullOrEmpty(normalizedCandidateAumid) ||
+                        normalizedCandidateAumid == normalizedSourceAumid;
+                })
+                .ToList();
+        }
+
+        return NarrowByExecutableHints(fallbackCandidates, signal);
     }
 
     private static List<NotificationWindowCandidate> NarrowByTitleTokens(

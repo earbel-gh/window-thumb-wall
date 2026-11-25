@@ -12,7 +12,7 @@ public sealed class SettingsWindowTests
         {
             SettingsWindow window = new(
                 osNotificationAttentionEnabled: true,
-                notificationAttentionSupported: true,
+                notificationAvailabilityText: "unavailable in this run",
                 _ => { });
 
             CheckBox checkBox = FindLogicalDescendant<CheckBox>(window.Content);
@@ -20,6 +20,10 @@ public sealed class SettingsWindowTests
             Assert.Equal(LocalizedText.Get("label.settings"), window.Title);
             Assert.Equal(LocalizedText.Get("setting.osNotifications"), checkBox.Content);
             Assert.True(checkBox.IsChecked);
+            Assert.True(checkBox.IsEnabled);
+            Grid root = Assert.IsType<Grid>(window.Content);
+            Assert.Contains(root.Children.OfType<TextBlock>(), text =>
+                text.Text.Contains("unavailable in this run", StringComparison.Ordinal));
         });
     }
 
@@ -31,7 +35,7 @@ public sealed class SettingsWindowTests
             List<bool> observed = [];
             SettingsWindow window = new(
                 osNotificationAttentionEnabled: false,
-                notificationAttentionSupported: true,
+                notificationAvailabilityText: "subscribed",
                 enabled => observed.Add(enabled));
 
             CheckBox checkBox = FindLogicalDescendant<CheckBox>(window.Content);

@@ -43,9 +43,13 @@ public sealed class TaskbarWindowOrderTests
     {
         var order = new TaskbarWindowOrder();
         order.ObserveCreated((IntPtr)10);
+        long? originalLifetime = order.GetLifetime((IntPtr)10);
+        Assert.NotNull(originalLifetime);
         order.ObserveCreated((IntPtr)20);
         order.ObserveDestroyed((IntPtr)10);
+        Assert.Null(order.GetLifetime((IntPtr)10));
         order.ObserveCreated((IntPtr)10);
+        Assert.NotEqual(originalLifetime, order.GetLifetime((IntPtr)10));
 
         TestWindow[] windowsInZOrder =
         [

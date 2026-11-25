@@ -6,6 +6,14 @@ namespace WindowThumbWall;
 
 internal static class NativeMethods
 {
+    internal const uint SWP_NOSIZE = 0x0001;
+    internal const uint SWP_NOZORDER = 0x0004;
+    internal const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
     // ── DWM Thumbnail ────────────────────────────────────────────
 
     [DllImport("dwmapi.dll")]
@@ -198,19 +206,24 @@ internal static class NativeMethods
     {
         Guid iid = typeof(IPropertyStore).GUID;
         int hr = SHGetPropertyStoreForWindow(hWnd, ref iid, out IPropertyStore? propertyStore);
-        if (hr != 0 || propertyStore == null)
+        if (propertyStore == null)
             return string.Empty;
 
         try
         {
-            PROPERTYKEY key = PKEY_AppUserModel_ID;
-            int valueHr = propertyStore.GetValue(ref key, out PROPVARIANT propVariant);
-            if (valueHr != 0)
+            if (hr < 0)
                 return string.Empty;
 
-            using (propVariant)
+            PROPERTYKEY key = PKEY_AppUserModel_ID;
+            PROPVARIANT propVariant = default;
+            try
             {
-                return propVariant.GetString() ?? string.Empty;
+                int valueHr = propertyStore.GetValue(ref key, out propVariant);
+                return valueHr < 0 ? string.Empty : propVariant.GetString() ?? string.Empty;
+            }
+            finally
+            {
+                propVariant.Dispose();
             }
         }
         catch
@@ -357,10 +370,19 @@ internal static class NativeMethods
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPropertyStore
     {
+        [PreserveSig]
         int GetCount(out uint propertyCount);
+
+        [PreserveSig]
         int GetAt(uint propertyIndex, out PROPERTYKEY key);
+
+        [PreserveSig]
         int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+
+        [PreserveSig]
         int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+
+        [PreserveSig]
         int Commit();
     }
 
