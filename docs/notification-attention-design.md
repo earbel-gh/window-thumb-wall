@@ -39,20 +39,21 @@ This document describes how WindowThumbWall expands attention signaling beyond t
 - Windows notification listener:
   - Source: `UserNotificationListener`
   - Precision: app metadata plus notification text, not HWND
-  - Collection model: record an initial toast snapshot as the baseline, subscribe to change events, reconcile one current-session snapshot against the baseline, then use event-triggered sync plus a 5-second follow-up reconciliation window
+  - Healthy collection: record an initial toast snapshot as the baseline, subscribe to change events, reconcile one current-session snapshot against the baseline, then use event-triggered sync plus a 5-second follow-up reconciliation window
+  - Recovery collection: only if event subscription fails with RPC HRESULT `0x800706BE` after the baseline, enter process-latched snapshot-only recovery; do not automatically resubscribe
   - Visual:
     - red flashing border for a unique match
     - orange flashing border for ambiguous monitored candidates
 
 ## Listener Status And Session Lifecycle
 
-Settings reports the notification listener state as one of: `Disabled`, `RequiresPackage`, `CheckingAccess`, `AccessRequired`, `AccessDenied`, `Listening`, `Unavailable`, `AccessFailed`, `SubscriptionFailed`, `ReadFailed`, or `SyncFailed`. `AccessDenied` also covers access revoked after listening began. `AccessFailed` identifies an access query or request failure; `SubscriptionFailed` an event-handler subscription failure; `ReadFailed` a notification snapshot read failure; and `SyncFailed` a snapshot reconciliation failure. The open Settings dialog reflects status changes while the listener runs.
+Settings reports the notification listener state as one of: `Disabled`, `RequiresPackage`, `CheckingAccess`, `AccessRequired`, `AccessDenied`, `Listening`, `Unavailable`, `AccessFailed`, `SubscriptionFailed`, `ReadFailed`, `SyncFailed`, `SnapshotRecoveryWaiting`, `SnapshotRecovery`, or `SnapshotRecoveryDegraded`. `AccessDenied` also covers access revoked after listening began. `AccessFailed` identifies an access query or request failure; `SubscriptionFailed` an event-handler subscription failure; `ReadFailed` a notification snapshot read failure; and `SyncFailed` a snapshot reconciliation failure. The recovery states distinguish waiting for a snapshot, snapshot-only recovery, and a degraded retry state. The open Settings dialog reflects status changes while the listener runs.
 
 Initialization first takes a snapshot and records it as the baseline, then subscribes to notification-change events and takes one current-session snapshot to reconcile against that baseline. A notification created between the baseline read and subscription is therefore included by the second read. The baseline snapshot itself does not create attention. An event queued during the reconciliation read can trigger a later sync as usual.
 
-Each asynchronous sync is tied to its current listener session and rechecks access around the toast-list read. Results from an ended session are ignored. If access is revoked, notification attention is cleared and the listener is torn down. Teardown stops the follow-up timer and invalidates session and handler state before attempting native event removal; unsubscribe errors are contained and logged.
+Only an `Unspecified` access state triggers an access request. An explicit `Denied` state remains `AccessDenied` and directs the user to Windows Settings; an unknown access value is reported as `AccessFailed`. Access loss clears notification attention and pauses recovery; granting access again requires toggling the preference off and on to start a fresh session. Each asynchronous read is tied to its current listener session and checks access before and after the read; results from an ended session are ignored. Teardown stops the follow-up and recovery timers and invalidates session and handler state before attempting native event removal; unsubscribe errors are contained and logged.
 
-While listening, event-driven reconciliation and its short follow-up window remain the normal collection path. A 30-second access monitor checks only `GetAccessStatus()` to detect permission revocation; it does not read the toast list. The listener does not poll the toast list continuously.
+Healthy sessions remain event-driven. A 30-second access monitor checks only `GetAccessStatus()` to detect permission revocation; it does not read the toast list. After the specific subscription failure above, snapshot recovery begins with an immediate read and allows only one toast-list request at a time. Successful snapshots continue every 4 seconds. Consecutive read failures use retry delays of 4, 8, 16, then 30 seconds, capped at 30 seconds; a successful read resets the delay. Recovery checks access around each read and reconciles snapshots against the recorded baseline. It does not automatically retry event subscription. Turning the preference off and on starts a fresh session and baseline, but the process latch keeps that session in snapshot-only recovery; the latch resets when the process exits. Snapshot sampling can miss a toast that appears and disappears between reads.
 
 ## Candidate Pool
 Candidate matching uses monitored slots only.
@@ -121,7 +122,7 @@ If an ambiguous notification belongs to an app that already has any monitored wi
 - Notifications first seen after the baseline remain eligible for re-evaluation on later syncs until they either resolve into an attention group or disappear from the current toast list.
 - Ambiguous flash suppression is evaluated when a newly added or updated notification is processed.
 - Because `UserNotificationChangedKind` only reports add/remove events, a notification event opens a 5-second follow-up reconciliation window to catch near-term in-place updates to an existing toast without constant polling.
-- Outside that event-driven follow-up window, the installed MSIX build does not continuously poll the toast list.
+- In healthy event-driven sessions, the installed MSIX build does not continuously poll the toast list outside the short follow-up window. Snapshot-only polling occurs only after the specific subscription failure described above.
 - Unmonitored windows do not participate in notification matching.
 
 ## Packaging Requirements

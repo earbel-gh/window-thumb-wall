@@ -18,6 +18,27 @@ public sealed class NotificationSessionAwaitTests
         Assert.Equal(expectedAvailability, NotificationAccessStatusPolicy.GetAvailability(accessStatus).ToString());
     }
 
+    [Theory]
+    [InlineData(unchecked((int)0x800706BE), true)]
+    [InlineData(unchecked((int)0x800706BA), false)]
+    [InlineData(unchecked((int)0x80040154), false)]
+    public void SnapshotRecoveryPolicy_OnlyLatchesVerifiedSubscriptionFailure(int hresult, bool expected)
+    {
+        Assert.Equal(expected, NotificationSnapshotRecoveryPolicy.ShouldRecoverFromSubscriptionFailure(hresult));
+    }
+
+    [Theory]
+    [InlineData(0, 4)]
+    [InlineData(1, 4)]
+    [InlineData(2, 8)]
+    [InlineData(3, 16)]
+    [InlineData(4, 30)]
+    [InlineData(12, 30)]
+    public void SnapshotRecoveryPolicy_UsesCappedDeterministicBackoff(int failures, int expectedSeconds)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), NotificationSnapshotRecoveryPolicy.GetRetryDelay(failures));
+    }
+
     private sealed class FakeSession
     {
         internal bool IsSubscribed { get; private set; }
@@ -185,6 +206,7 @@ public sealed class NotificationSessionAwaitTests
                 order.Add("initial-snapshot");
                 return Task.FromResult(new[] { 10 });
             },
+            static _ => true,
             initialIds =>
             {
                 knownBaselineIds.AddRange(initialIds);
@@ -251,6 +273,7 @@ public sealed class NotificationSessionAwaitTests
             session,
             current => lifecycle.IsCurrent(current, static _ => true),
             () => Task.FromResult(1),
+            static _ => true,
             _ => { },
             session.Subscribe,
             session.Unsubscribe,
