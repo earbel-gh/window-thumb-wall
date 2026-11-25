@@ -31,7 +31,8 @@ jobs:
       tree: ${{ steps.release_identity.outputs.tree }}
 
     env:
-      VERSION: ''
+      # Keep the artifact label separate from MSBuild's Version property.
+      RELEASE_ARTIFACT_LABEL: ''
       DIST_DIR: dist
 
     steps:
@@ -108,8 +109,8 @@ jobs:
           VERIFIED_TAG: ${{ steps.release_identity.outputs.tag }}
         run: |
           $ver = if ($env:VERIFIED_TAG) { $env:VERIFIED_TAG } else { 'dev' }
-          "VERSION=$ver" | Out-File $env:GITHUB_ENV -Append
-          Write-Host "VERSION=$ver"
+          "RELEASE_ARTIFACT_LABEL=$ver" | Out-File $env:GITHUB_ENV -Append
+          Write-Host "RELEASE_ARTIFACT_LABEL=$ver"
 
       - name: Create output directory
         run: New-Item -ItemType Directory -Force -Path $env:DIST_DIR | Out-Null
@@ -158,7 +159,7 @@ jobs:
 
             # ── ZIP artifact ─────────────────────────────────────────
             Get-ChildItem "publish-$arch" -Filter *.pdb -Recurse | Remove-Item -Force
-            $zipPath = "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-$arch.zip"
+            $zipPath = "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.zip"
             Compress-Archive -Path "publish-$arch\*" -DestinationPath $zipPath -CompressionLevel Optimal
             if (-not (Test-Path -LiteralPath $zipPath) -or (Get-Item -LiteralPath $zipPath).Length -eq 0) {
               throw "ZIP creation failed for $runtime"
@@ -174,7 +175,7 @@ jobs:
 
             $publishMsiDir = (Resolve-Path "publish-msi-$arch").Path
 
-            $plainVersion = $env:VERSION -replace '^v', ''
+            $plainVersion = $env:RELEASE_ARTIFACT_LABEL -replace '^v', ''
             if ($plainVersion -match '^\d+\.\d+\.\d+$') {
               $versionParts = $plainVersion.Split('.')
               $msiProductVersion = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).0"
@@ -188,11 +189,11 @@ jobs:
               -ext WixToolset.UI.wixext `
               -d PublishDir="$publishMsiDir" `
               -d ProductVersion="$msiProductVersion" `
-              -o "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-$arch.msi" 2>&1
+              -o "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.msi" 2>&1
             $wixOutput | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "WiX MSI build failed for $runtime" }
             if ($wixOutput -match 'WIX8600|WIX8601') { throw "WiX harvested no MSI payload files for $runtime" }
-            & .\packaging\verify-msi-payload.ps1 -MsiPath "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-$arch.msi"
+            & .\packaging\verify-msi-payload.ps1 -MsiPath "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.msi"
 
             # ── MSIX artifact ───────────────────────────────────────
             dotnet publish WindowThumbWall.csproj `
@@ -205,7 +206,7 @@ jobs:
             Copy-Item packaging\Assets "publish-msix-$arch\Assets" -Recurse -Force
 
             # Patch MSIX manifest version and architecture
-            $plainVersion = $env:VERSION -replace '^v', ''
+            $plainVersion = $env:RELEASE_ARTIFACT_LABEL -replace '^v', ''
             $manifestPath = "publish-msix-$arch\AppxManifest.xml"
             [xml]$xml = Get-Content $manifestPath
             $resourceLanguages = @($xml.Package.Resources.Resource | ForEach-Object { [string]$_.Language })
@@ -230,9 +231,9 @@ jobs:
               Write-Error "makeappx.exe not found. Ensure Windows SDK is installed."
               exit 1
             }
-            & $makeappx pack /d "publish-msix-$arch" /p "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-$arch.msix" /o
+            & $makeappx pack /d "publish-msix-$arch" /p "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.msix" /o
             if ($LASTEXITCODE -ne 0) { throw "makeappx failed for $runtime" }
-            $msixPath = "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-$arch.msix"
+            $msixPath = "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.msix"
             if (-not (Test-Path -LiteralPath $msixPath) -or (Get-Item -LiteralPath $msixPath).Length -eq 0) {
               throw "MSIX creation failed for $runtime"
             }
@@ -242,12 +243,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $msiPath = (Resolve-Path "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-x64.msi").Path
+          $msiPath = (Resolve-Path "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-x64.msi").Path
           $installLog = Join-Path $env:DIST_DIR 'msi-install.log'
           $uninstallLog = Join-Path $env:DIST_DIR 'msi-uninstall.log'
           $installedExe = 'C:\Program Files\WindowThumbWall\WindowThumbWall.exe'
           $installed = $false
-          $plainVersion = $env:VERSION -replace '^v', ''
+          $plainVersion = $env:RELEASE_ARTIFACT_LABEL -replace '^v', ''
           if ($plainVersion -match '^\d+\.\d+\.\d+$') {
             $versionParts = $plainVersion.Split('.')
             $expectedFileVersion = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).0"
@@ -292,7 +293,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $previousMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-v0.6.10-win-x64.msi'
-          $currentMsi = (Resolve-Path -LiteralPath "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-x64.msi").Path
+          $currentMsi = (Resolve-Path -LiteralPath "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-x64.msi").Path
           $expectedFileVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/FileVersion').Node.InnerText
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             # Bake the target version into the isolated candidate without editing version files.
@@ -321,7 +322,7 @@ jobs:
       - name: Generate release metadata
         run: |
           $ErrorActionPreference = 'Stop'
-          .\packaging\generate-release-metadata.ps1 -Version "$env:VERSION" -OutputDir "$env:DIST_DIR"
+          .\packaging\generate-release-metadata.ps1 -Version "$env:RELEASE_ARTIFACT_LABEL" -OutputDir "$env:DIST_DIR"
           @('release-notes.md', 'store-listing-ja.md', 'store-listing-en.md', 'store-whats-new-ja.md', 'store-whats-new-en.md') | ForEach-Object {
             $metadataPath = Join-Path $env:DIST_DIR $_
             if (-not (Test-Path -LiteralPath $metadataPath) -or (Get-Item -LiteralPath $metadataPath).Length -eq 0) {
@@ -366,9 +367,9 @@ jobs:
         with:
           name: unsigned-artifacts
           path: |
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.zip
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.msi
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.msix
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.zip
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.msi
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.msix
             ${{ env.DIST_DIR }}/release-notes.md
             ${{ env.DIST_DIR }}/store-listing-*.md
             ${{ env.DIST_DIR }}/store-whats-new-*.md
@@ -381,9 +382,9 @@ jobs:
         with:
           name: unsigned-artifacts
           path: |
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.zip
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.msi
-            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.VERSION }}-win-*.msix
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.zip
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.msi
+            ${{ env.DIST_DIR }}/WindowThumbWall-${{ env.RELEASE_ARTIFACT_LABEL }}-win-*.msix
             ${{ env.DIST_DIR }}/release-notes.md
             ${{ env.DIST_DIR }}/store-listing-*.md
             ${{ env.DIST_DIR }}/store-whats-new-*.md
