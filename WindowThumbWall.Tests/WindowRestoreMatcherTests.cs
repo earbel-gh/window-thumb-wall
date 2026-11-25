@@ -3,6 +3,23 @@ namespace WindowThumbWall.Tests;
 public sealed class WindowRestoreMatcherTests
 {
     [Fact]
+    public void LegacyAppMatch_AllowsNewProcessAfterBindingButRejectsSameProcessSibling()
+    {
+        var intent = new SlotState
+        {
+            ProcessName = "chrome",
+            Title = "Project planning",
+            LastBindingIdentity = Identity(11, 42, 123)
+        };
+        WindowInfo replacement = Window(22, intent.Title, Identity(22, 84, 456));
+        WindowInfo sibling = Window(33, intent.Title, Identity(33, 42, 123));
+
+        Assert.True(WindowSlotRules.IsLegacyAppMatch(intent, replacement));
+        Assert.False(WindowSlotRules.HasConflictingLegacyLifetime(intent, replacement));
+        Assert.True(WindowSlotRules.HasConflictingLegacyLifetime(intent, sibling));
+    }
+
+    [Fact]
     public void Match_UsesValidatedLiveHandleWhenUnreadCountChanges()
     {
         SlotState saved = Saved("(2) WhatsApp - Google Chrome", Identity(11, 42, 123));
@@ -199,11 +216,105 @@ public sealed class WindowRestoreMatcherTests
         Assert.Empty(matches);
     }
 
-    private static SlotState Saved(string title, WindowIdentity identity, string processName = "chrome") => new()
+    [Fact]
+    public void Match_UsesLastBindingIdentityForValidatedHandleMatch()
+    {
+        SlotState saved = Saved("Old tab title", Identity(null, null, null), lastBindingIdentity: Identity(11, 42, 123));
+        WindowInfo candidate = Window(11, "Current title", Identity(11, 42, 123));
+
+        IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match([saved], [candidate]);
+
+        Assert.Same(candidate, Assert.Single(matches).Value);
+    }
+
+    [Fact]
+    public void Match_UsesLastBindingIdentityToRejectOriginalProcessSibling()
+    {
+        SlotState saved = Saved("same title", Identity(11, 7, 70), lastBindingIdentity: Identity(11, 42, 123));
+        WindowInfo sibling = Window(22, "same title", Identity(22, 42, 123));
+        var needsChoice = new HashSet<int>();
+
+        IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match([saved], [sibling], needsChoice);
+
+        Assert.Empty(matches);
+        Assert.Equal(0, Assert.Single(needsChoice));
+    }
+
+    [Fact]
+    public void Match_DoesNotSelectRunnerUpWhenBestTitleIsUnavailable()
+    {
+        SlotState saved = Saved("Project planning dashboard", Identity(11, 42, 123));
+        WindowInfo best = Window(22, "Project planning dashboard", Identity(22, 84, 456));
+        WindowInfo runnerUp = Window(33, "Project planning schedule", Identity(33, 84, 456));
+        var needsChoice = new HashSet<int>();
+
+        IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match(
+            [saved], [best, runnerUp], needsChoice, new HashSet<IntPtr> { best.Handle });
+
+        Assert.Empty(matches);
+        Assert.Equal(0, Assert.Single(needsChoice));
+    }
+
+    [Fact]
+    public void Match_DoesNotFallBackFromUnavailableValidatedLiveHandle()
+    {
+        SlotState saved = Saved("WhatsApp - Google Chrome", Identity(11, 42, 123));
+        WindowInfo live = Window(11, "(3) WhatsApp - Google Chrome", Identity(11, 42, 123));
+        WindowInfo sibling = Window(22, "WhatsApp - Google Chrome", Identity(22, 84, 456));
+        var needsChoice = new HashSet<int>();
+
+        IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match(
+            [saved], [sibling, live], needsChoice, new HashSet<IntPtr> { live.Handle });
+
+        Assert.Empty(matches);
+        Assert.Equal(0, Assert.Single(needsChoice));
+    }
+
+    [Fact]
+    public void Match_PreservesSignificantParenthesizedYear()
+    {
+        SlotState saved = Saved("(2026) Project planning dashboard", Identity(11, 42, 123));
+        WindowInfo candidate = Window(22, "(2027) Project planning dashboard", Identity(22, 84, 456));
+
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [candidate]));
+    }
+
+    [Fact]
+    public void Match_AllowsDistinctiveShortJapaneseExactTitleOnly()
+    {
+        SlotState saved = Saved("猫犬", Identity(11, 42, 123));
+        WindowInfo exact = Window(22, "猫犬", Identity(22, 84, 456));
+        WindowInfo approximate = Window(33, "猫狐", Identity(33, 84, 456));
+        SlotState generic = Saved("無題", Identity(11, 42, 123));
+        WindowInfo genericCandidate = Window(44, "無題", Identity(44, 84, 456));
+
+        Assert.Same(exact, Assert.Single(WindowRestoreMatcher.Match([saved], [exact, approximate])).Value);
+        Assert.Empty(WindowRestoreMatcher.Match([generic], [genericCandidate]));
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [approximate]));
+    }
+
+    [Theory]
+    [InlineData("(2) WhatsApp - Google Chrome", "(37) WHATSAPP - Google Chrome", "chrome")]
+    [InlineData("WhatsApp - Microsoft Edge", "(3) WhatsApp - Microsoft Edge", "msedge")]
+    [InlineData("WhatsApp - Mozilla Firefox", "(19) WhatsApp - Mozilla Firefox", "firefox")]
+    public void Match_NormalizesUnreadPrefixOnlyForWhatsApp(string savedTitle, string candidateTitle, string processName)
+    {
+        SlotState saved = Saved(savedTitle, Identity(11, 42, 123), processName);
+        WindowInfo candidate = Window(22, candidateTitle, Identity(22, 84, 456), processName);
+
+        Assert.Same(candidate, Assert.Single(WindowRestoreMatcher.Match([saved], [candidate])).Value);
+    }
+
+    private static SlotState Saved(
+        string title,
+        WindowIdentity identity,
+        string processName = "chrome",
+        WindowIdentity? lastBindingIdentity = null) => new()
     {
         ProcessName = processName,
         Title = title,
-        Identity = identity
+        Identity = identity,
+        LastBindingIdentity = lastBindingIdentity
     };
 
     private static WindowInfo Window(long handle, string title, WindowIdentity identity, string processName = "chrome") => new()

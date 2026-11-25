@@ -12,6 +12,8 @@
 
 For packaging all official formats, use `.\packaging\build-all.ps1`. For MSIX packaging alone, use `.\packaging\build-msix.ps1 -Configuration Release`; its `.wapproj` requires Visual Studio MSBuild. See the [developer guide](docs/developer-guide.md) for interactive app use and packaging details.
 
+For agent-run window verification, use `pwsh` and `.\packaging\start-development.ps1` after the Release build. Use its returned PID for debugger attachment and its isolated state path for evidence. If Display 3 is unavailable, continue checks that can run without a window. Follow the [developer guide](docs/developer-guide.md#agent-verification-and-debugging) for interactive and installed-package checks.
+
 ## Language
 
 - ユーザー向けの説明は日本語で行う。

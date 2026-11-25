@@ -9,13 +9,14 @@ internal static class WindowRestoreMatcher
     private const int MaximumFuzzyTitleLength = 512;
 
     private static readonly Regex Whitespace = new(@"\s+");
-    private static readonly Regex UnreadCountPrefix = new(@"^\([0-9]+\)\s+");
+    private static readonly Regex UnreadCountPrefix = new(@"^\(\p{Nd}+\)\s+");
     private static readonly Regex Numbers = new(@"\p{Nd}+");
 
     internal static IReadOnlyDictionary<int, WindowInfo> Match(
         IReadOnlyList<SlotState> savedSlots,
         IReadOnlyList<WindowInfo> windows,
-        ISet<int>? needsChoice = null)
+        ISet<int>? needsChoice = null,
+        IReadOnlySet<IntPtr>? unavailableHandles = null)
     {
         var liveMatches = new Dictionary<int, WindowInfo>();
         var liveMatchHandles = new HashSet<IntPtr>();
@@ -31,7 +32,12 @@ internal static class WindowRestoreMatcher
             foreach (WindowInfo candidate in candidates)
                 liveMatchHandles.Add(candidate.Handle);
             if (candidates.Length == 1)
-                liveMatches.Add(slotIndex, candidates[0]);
+            {
+                if (unavailableHandles?.Contains(candidates[0].Handle) == true)
+                    needsChoice?.Add(slotIndex);
+                else
+                    liveMatches.Add(slotIndex, candidates[0]);
+            }
             else if (candidates.Length == 0)
                 unmatchedSlots.Add(slotIndex);
             else
@@ -43,7 +49,9 @@ internal static class WindowRestoreMatcher
         {
             WindowInfo? match = FindBestTitleMatch(savedSlots[slotIndex], windows, out bool ambiguous);
             // Rank before excluding claimed windows; don't silently promote a runner-up.
-            if (match != null && !liveMatchHandles.Contains(match.Handle))
+            if (match != null &&
+                !liveMatchHandles.Contains(match.Handle) &&
+                unavailableHandles?.Contains(match.Handle) != true)
                 titleMatches.Add(slotIndex, match);
             else if (ambiguous || match != null)
                 needsChoice?.Add(slotIndex);
@@ -72,6 +80,8 @@ internal static class WindowRestoreMatcher
         if (saved.Identity is not { } identity || !HasStrongEvidence(identity))
             return null;
 
+        WindowIdentity lastBindingIdentity = saved.LastBindingIdentity ?? identity;
+
         string savedTitle = NormalizeTitle(saved.Title, saved.ProcessName);
         if (!IsMeaningfulTitle(savedTitle))
             return null;
@@ -91,7 +101,7 @@ internal static class WindowRestoreMatcher
         WindowInfo best = matches[0].Window;
         // A different handle in the original process may just be a surviving sibling.
         ambiguous = (matches.Length == 2 && matches[0].Score < matches[1].Score + MinimumTitleLead) ||
-            (best.Identity is { } candidate && IsSameProcessInstance(identity, candidate));
+            (best.Identity is { } candidate && IsSameProcessInstance(lastBindingIdentity, candidate));
         return ambiguous ? null : best;
     }
 
@@ -111,21 +121,45 @@ internal static class WindowRestoreMatcher
             string suffix = " - " + browserName;
             if (normalized.EndsWith(suffix, StringComparison.Ordinal))
                 normalized = normalized[..^suffix.Length].TrimEnd();
-            normalized = UnreadCountPrefix.Replace(normalized, string.Empty);
+            Match unreadPrefix = UnreadCountPrefix.Match(normalized);
+            if (unreadPrefix.Success &&
+                string.Equals(normalized[unreadPrefix.Length..], "whatsapp", StringComparison.Ordinal))
+            {
+                normalized = normalized[unreadPrefix.Length..];
+            }
         }
 
         return normalized;
     }
 
     private static bool IsMeaningfulTitle(string title) =>
-        title.Length >= 4 && title.Any(char.IsLetter) &&
-        title is not ("new tab" or "new window" or "about:blank" or "untitled" or
-            "google chrome" or "microsoft edge" or "mozilla firefox" or "outlook" or "microsoft outlook");
+        !IsGenericTitle(title) &&
+        ((title.Length >= 4 && title.Any(char.IsLetter)) || CountJapaneseLetters(title) >= 2);
+
+    private static bool IsFuzzyTitle(string title) =>
+        !IsGenericTitle(title) && title.Length >= 4 && title.Any(char.IsLetter);
+
+    private static bool IsGenericTitle(string title) =>
+        title is "new tab" or "new window" or "about:blank" or "untitled" or
+            "google chrome" or "microsoft edge" or "mozilla firefox" or "outlook" or "microsoft outlook" or
+            "新しいタブ" or "新規タブ" or "無題" or "空白" or "空白ページ" or
+            "ホーム" or "スタートページ" or "新しいウィンドウ" or "タイトルなし";
+
+    private static int CountJapaneseLetters(string title) => title.Count(character =>
+        (int)character is >= 0x3040 and <= 0x309F or
+        >= 0x30A0 and <= 0x30FF or
+        >= 0x31F0 and <= 0x31FF or
+        >= 0x3400 and <= 0x4DBF or
+        >= 0x4E00 and <= 0x9FFF or
+        >= 0xF900 and <= 0xFAFF);
 
     private static double TitleSimilarity(string saved, string candidate)
     {
         if (saved == candidate)
-            return 1;
+            return IsMeaningfulTitle(saved) ? 1 : 0;
+
+        if (!IsFuzzyTitle(saved) || !IsFuzzyTitle(candidate))
+            return 0;
 
         int length = Math.Max(saved.Length, candidate.Length);
         if (length > MaximumFuzzyTitleLength ||
@@ -156,7 +190,7 @@ internal static class WindowRestoreMatcher
 
     private static bool IsValidatedHandleMatch(SlotState saved, WindowInfo window)
     {
-        if (saved.Identity is not
+        if ((saved.LastBindingIdentity ?? saved.Identity) is not
                 {
                     Handle: long savedHandle
                 } savedIdentity ||
@@ -174,7 +208,7 @@ internal static class WindowRestoreMatcher
             MatchesStoredStrongFields(savedIdentity, currentIdentity);
     }
 
-    private static bool IsSameProcessInstance(WindowIdentity saved, WindowIdentity current) =>
+    internal static bool IsSameProcessInstance(WindowIdentity saved, WindowIdentity current) =>
         saved.ProcessId is > 0 &&
         saved.ProcessId == current.ProcessId &&
         saved.ProcessStartTimeUtcTicks is > 0 &&

@@ -48,6 +48,15 @@ internal sealed class WindowIdentity
         return true;
     }
 
+    internal WindowIdentity WithoutHandle() => new()
+    {
+        ProcessId = ProcessId,
+        ProcessStartTimeUtcTicks = ProcessStartTimeUtcTicks,
+        ExecutablePath = ExecutablePath,
+        WindowClassName = WindowClassName,
+        AppUserModelId = AppUserModelId
+    };
+
     private static long? GetProcessStartTimeUtcTicks(uint processId)
     {
         if (processId == 0 || processId > int.MaxValue)

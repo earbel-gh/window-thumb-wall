@@ -8,6 +8,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      verify_previous_msi_upgrade:
+        description: Test the published v0.6.10 MSI upgrade on the hosted runner
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,7 +53,6 @@ jobs:
           EVENT_CREATED: ${{ github.event.created }}
           EVENT_DELETED: ${{ github.event.deleted }}
           EVENT_FORCED: ${{ github.event.forced }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $commit = (& git rev-parse HEAD).Trim()
@@ -91,8 +95,6 @@ jobs:
             if ([string]$project.Project.PropertyGroup.Version -cne $tag.Substring(1)) {
               throw 'The project package version does not match the release tag.'
             }
-            $release = Invoke-WebRequest -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" -Headers @{Authorization="Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
-            if ($release.StatusCode -ne 404) { throw "Expected no existing GitHub release ($($release.StatusCode))." }
           }
 
           "tag=$tag" >> $env:GITHUB_OUTPUT
@@ -280,6 +282,37 @@ jobs:
             }
           }
 
+      - name: Verify v0.6.10 MSI major upgrade preserves user state
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name != 'v0.6.10') || (github.event_name == 'workflow_dispatch' && inputs.verify_previous_msi_upgrade)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $previousMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-v0.6.10-win-x64.msi'
+          $currentMsi = (Resolve-Path -LiteralPath "$env:DIST_DIR\WindowThumbWall-$env:VERSION-win-x64.msi").Path
+          $expectedFileVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/FileVersion').Node.InnerText
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            # Bake the target version into the isolated candidate without editing version files.
+            $candidateMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-upgrade-candidate-win-x64.msi'
+            $publishDir = Join-Path $env:RUNNER_TEMP 'window-thumb-wall-upgrade-candidate-x64'
+            $expectedFileVersion = '0.6.11.0'
+            dotnet publish WindowThumbWall.csproj -c Release -r win-x64 --self-contained -o "$publishDir" `
+              -p:PublishSingleFile=false -p:Version=0.6.11 -p:AssemblyVersion=0.6.11.0 -p:FileVersion=0.6.11.0
+            if ($LASTEXITCODE -ne 0) { throw 'Could not publish the development upgrade fixture.' }
+            wix build packaging\WindowThumbWall.wxs -acceptEula wix7 -arch x64 -ext WixToolset.UI.wixext `
+              -d PublishDir="$publishDir" -d ProductVersion=0.6.11.0 -o "$candidateMsi"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not build the development upgrade fixture.' }
+            & .\packaging\verify-msi-payload.ps1 -MsiPath $candidateMsi
+            $currentMsi = $candidateMsi
+          }
+
+          $previousUri = 'https://github.com/tsuchim/window-thumb-wall/releases/download/v0.6.10/WindowThumbWall-v0.6.10-win-x64.msi'
+          Invoke-WebRequest -Uri $previousUri -OutFile $previousMsi
+          & .\packaging\test-msi-major-upgrade.ps1 `
+            -PreviousMsi $previousMsi `
+            -CurrentMsi $currentMsi `
+            -ExpectedVersion $expectedFileVersion `
+            -LogDirectory $env:DIST_DIR
+
       # ── Generate Metadata ─────────────────────────────────────
       - name: Generate release metadata
         run: |
@@ -318,6 +351,7 @@ jobs:
           path: |
             ${{ env.DIST_DIR }}/msi-install.log
             ${{ env.DIST_DIR }}/msi-uninstall.log
+            ${{ env.DIST_DIR }}/msi-upgrade-*.log
           if-no-files-found: warn
 
       # ── Upload artifacts ───────────────────────────────────────
@@ -392,16 +426,6 @@ jobs:
           name: unsigned-artifacts
           path: ${{ env.DIST_DIR }}
 
-      - name: Refuse to overwrite an existing GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.build.outputs.tag }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $release = Invoke-WebRequest -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" -Headers @{Authorization="Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
-          if ($release.StatusCode -ne 404) { throw "Expected no existing GitHub release ($($release.StatusCode))." }
-
       - name: Verify release identity, remote tag and provenance
         shell: pwsh
         env:
@@ -429,16 +453,24 @@ jobs:
           }
           .\packaging\release-artifact-manifest.ps1 -Mode Verify -Directory $env:DIST_DIR -Tag $env:RELEASE_TAG -TagObject $env:RELEASE_TAG_OBJECT -Commit $env:RELEASE_COMMIT -Tree $env:RELEASE_TREE
 
-      - name: Create draft GitHub Release and upload assets
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
-        with:
-          tag_name: ${{ needs.build.outputs.tag }}
-          target_commitish: ${{ needs.build.outputs.commit }}
-          name: WindowThumbWall ${{ needs.build.outputs.tag }}
-          body_path: ${{ env.DIST_DIR }}/release-notes.md
-          draft: true
-          files: |
-            ${{ env.DIST_DIR }}/*.zip
-            ${{ env.DIST_DIR }}/*.msi
-            ${{ env.DIST_DIR }}/*.msix
-          fail_on_unmatched_files: true
+      - name: Reconcile verified GitHub draft and assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_TAG_OBJECT: ${{ needs.build.outputs.tag_object }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+          RELEASE_TREE: ${{ needs.build.outputs.tree }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\packaging\reconcile-github-release.ps1 `
+            -ApiBase $env:GITHUB_API_URL `
+            -Repository $env:GITHUB_REPOSITORY `
+            -Tag $env:RELEASE_TAG `
+            -TagObject $env:RELEASE_TAG_OBJECT `
+            -Commit $env:RELEASE_COMMIT `
+            -Tree $env:RELEASE_TREE `
+            -Directory $env:DIST_DIR `
+            -Token $env:GH_TOKEN

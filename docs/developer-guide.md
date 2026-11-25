@@ -33,8 +33,19 @@ You can also deliberately launch the unpackaged app from a terminal:
 dotnet run --project WindowThumbWall.csproj
 ```
 
-### Unattended Verification
-Use the app and test project CLI commands in [Build And Test Split](#build-and-test-split) for unattended verification. Do not use `dotnet run` or Visual Studio F5 as the default unattended check. The `build-and-run-msix.ps1` script is only for isolated package verification because it installs or replaces the local package and launches the app; no maintained unattended app-launch entrypoint is documented here yet.
+### Agent Verification And Debugging
+Use [Build And Test Split](#build-and-test-split) for checks that can run without a window. Use the development launcher for checks that need the unpackaged application window:
+
+```powershell
+dotnet build .\WindowThumbWall.csproj -c Release
+.\packaging\start-development.ps1 -Preflight
+$launch = .\packaging\start-development.ps1
+$launch | Select-Object ProcessId, DisplayDevice, StatePath
+```
+
+Use PowerShell 7. The launcher resolves the Windows display device for Display 3, positions the first window there without activating it, and writes each launch to a separate state directory. Pass `-StateSeedPath` to start with a copy of a test fixture or `-ExecutablePath` for a different build. When debugging a running development build, attach to the returned `ProcessId` from an existing debugger session. Use the returned path and process to inspect and clean up your own test instance.
+
+If Display 3 is unavailable or the current foreground window occupies it, the launcher refuses to start. Continue the checks that can run without a window. Get approval for the specific test before using foreground activation or exclusive input. For installed-package verification, use an isolated Windows user or guest and the package checklist below.
 
 If you start the unpackaged `dotnet run` / `bin\Debug` build, the Settings window now keeps `Reflect OS notifications` disabled and explains that notification attention requires the installed MSIX runtime.
 The installed MSIX build does not use constant notification polling; it scans immediately when notification-change events arrive and keeps a 5-second follow-up reconciliation window for near-term toast updates.
@@ -59,6 +70,12 @@ dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no
 ```
 
 ## Taskbar-Like Automatic Addition Order
+
+Automatic windows fill their planned position in the wall while preserving the relative order of existing slots. A saved manual slot remains available for correction while its source is missing. An app-wide rule can fill a uniquely matching legacy placeholder when the saved and eligible live titles agree. Competing claims remain unresolved.
+
+Use **Choose window** on a live or unresolved slot to replace its target. A new DWM registration must succeed before the app replaces the existing display. **Remove wall slot** removes the layout entry. Its specific auto-add rule stays available in the sidebar and can show its slot again. **Remove rule** removes the registration and keeps the slot.
+
+The first schema 2 save preserves the old settings in `state.json.pre-v2.bak`. A failed save is shown in the sidebar. Retry a transient failure there. If another instance saved a newer revision, save a recovery copy before restarting.
 
 Automatic addition has one persistent in-memory ordering tracker for the lifetime of the running application. At startup, the application seeds already-open eligible windows from the available Z-order state as a deterministic best-effort approximation. Windows observed through later Shell Hook create notifications are appended in observed creation order; destroy notifications remove them, so a reused numeric HWND receives a new position.
 

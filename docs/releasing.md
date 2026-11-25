@@ -18,6 +18,30 @@ exact tag object, commit, tree, toolchain, and SHA-256 values and file sizes.
 Review the draft and actual Store submission separately before announcing the
 release. Store submission is followed by Microsoft certification.
 
+### Recovering a Partial GitHub Draft
+
+The GitHub job reconciles the draft for the exact signed tag after the Store
+job succeeds. The initial draft body carries an identity marker containing the
+tag, immutable annotated tag object, target commit, source tree, and SHA-256 of
+`release-provenance.json`. A retry requires that marker and the same tag and
+target commit. A published release, a mismatched marker or target, an unknown
+asset, or an asset with conflicting bytes stops recovery for owner review.
+
+The draft asset set is exactly the six ZIP, MSI, and MSIX packages for x64 and
+ARM64 plus `release-provenance.json`. The job verifies the local provenance
+manifest before contacting GitHub. It checks existing assets by GitHub SHA-256
+digest and size, or downloads and hashes the bytes when GitHub omits the digest.
+It uploads only missing assets, then reads the same release ID and asset set
+back before succeeding. Do not delete a conflicting asset or draft to force a
+retry.
+
+If the Store job already succeeded and the GitHub job failed, rerun only the
+failed GitHub job in the same workflow run. That reuses the successful Store
+result and reconciles the existing draft; it does not submit to the Store
+again. If an upload result was uncertain, the next run first reads the draft
+and its assets and proceeds only from that observed state. Manual workflow
+dispatch remains a build-and-verify path and never creates or repairs a draft.
+
 ## Privacy Pages
 
 [Deploy Privacy Page](../.github/workflows/deploy-pages.yml) is an operational
@@ -25,6 +49,22 @@ publication workflow for the English and Japanese privacy notices. Its automatic
 trigger is a main push affecting those notices or their Pages workflow. Its
 manual trigger also publishes to the `github-pages` environment. Treat this as a
 dedicated publication operation when changing or running it.
+
+## MSI upgrade check
+
+The signed-tag build checks both a fresh x64 install and an upgrade from the
+published v0.6.10 MSI on its isolated Windows runner. The upgrade keeps the
+shared cleanup component identity and schedules removal of the old product
+after the new install executes. Its check confirms the old ProductCode is
+gone, the new executable has the release version, and a legacy settings
+fixture remains byte-for-byte intact. A failed check holds both publication jobs.
+
+For pre-integration evidence, dispatch **Build Release Artifacts** on the exact
+candidate branch with `verify_previous_msi_upgrade` enabled. Its isolated
+x64 fixture uses the target 0.6.11 version and candidate source. The normal
+development outputs keep their existing version, and the dispatch cannot reach
+either publication job. The signed-tag build repeats the gate with the actual
+release MSI.
 
 ## Distribution Invariant
 The official distribution formats are fixed.

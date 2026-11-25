@@ -9,42 +9,43 @@ internal sealed class ThumbnailSlot
 {
     private readonly ThumbHost _host;
     private readonly IntPtr _ownerHwnd;
-    private IntPtr _thumbId;
+    private readonly DwmThumbnailRegistration _thumbnail;
     private bool _hasAppliedState;
     private bool _lastVisible;
     private NativeMethods.RECT _lastDestination;
 
+    internal Guid SlotId { get; }
     internal IntPtr SourceHwnd { get; private set; }
     internal string SourceTitle { get; private set; } = string.Empty;
     internal string SourceProcessName { get; private set; } = string.Empty;
     internal WindowIdentity? Identity { get; private set; }
-    internal SlotState? UnresolvedState { get; private set; }
-    internal bool IsPinned { get; private set; }
+    internal SlotState? Intent { get; private set; }
+    internal SlotState? UnresolvedState => IsOccupied ? null : Intent;
+    internal bool IsPinned => Intent?.RuleId != null;
     internal bool IsOccupied => SourceHwnd != IntPtr.Zero;
     internal bool IsUnresolved => !IsOccupied && UnresolvedState != null;
-    internal bool HasRegistration => _thumbId != IntPtr.Zero;
+    internal bool HasRegistration => _thumbnail.Handle != IntPtr.Zero;
 
-    internal ThumbnailSlot(ThumbHost host, IntPtr ownerHwnd)
+    internal ThumbnailSlot(ThumbHost host, IntPtr ownerHwnd, Guid? slotId = null)
     {
         _host = host;
         _ownerHwnd = ownerHwnd;
+        SlotId = slotId ?? Guid.NewGuid();
+        _thumbnail = new DwmThumbnailRegistration(AcquireThumbnail, static handle => NativeMethods.DwmUnregisterThumbnail(handle));
     }
 
-    internal bool Assign(IntPtr sourceHwnd, string title, string processName, WindowIdentity identity, bool isPinned)
+    internal bool Assign(IntPtr sourceHwnd, string title, string processName, WindowIdentity identity, SlotState intent)
     {
-        Clear();
-        if (_host.Hwnd == IntPtr.Zero) return false;
+        if (intent.SlotId != SlotId || !_thumbnail.TryReplace(sourceHwnd))
+            return false;
 
+        ResetAppliedState();
         SourceHwnd = sourceHwnd;
         SourceTitle = title;
         SourceProcessName = processName;
         Identity = identity;
-        IsPinned = isPinned;
-        if (!TryRegisterThumbnail())
-        {
-            ResetSourceInfo();
-            return false;
-        }
+        intent.LastBindingIdentity = identity;
+        Intent = intent;
 
         UpdateThumbnail();
         return true;
@@ -52,28 +53,31 @@ internal sealed class ThumbnailSlot
 
     internal void SetUnresolved(SlotState state)
     {
+        if (state.SlotId != SlotId)
+            throw new ArgumentException("The saved intent belongs to a different slot.", nameof(state));
         Clear();
-        UnresolvedState = state;
-        IsPinned = state.IsPinned;
+        Intent = state;
     }
 
     internal bool RefreshRegistration()
     {
-        if (SourceHwnd == IntPtr.Zero || _host.Hwnd == IntPtr.Zero)
+        if (!_thumbnail.TryReplace(SourceHwnd))
             return false;
 
-        UnregisterThumbnail();
-        if (!TryRegisterThumbnail())
-            return false;
-
+        ResetAppliedState();
         UpdateThumbnail();
         return true;
     }
 
     internal void Clear()
     {
-        UnregisterThumbnail();
+        _thumbnail.Release();
         ResetSourceInfo();
+        ResetAppliedState();
+    }
+
+    private void ResetAppliedState()
+    {
         _hasAppliedState = false;
         _lastVisible = false;
         _lastDestination = default;
@@ -86,7 +90,7 @@ internal sealed class ThumbnailSlot
     /// </summary>
     internal void UpdateThumbnail()
     {
-        if (_thumbId == IntPtr.Zero || _host.Hwnd == IntPtr.Zero) return;
+        if (_thumbnail.Handle == IntPtr.Zero || _host.Hwnd == IntPtr.Zero) return;
 
         // If the host HWND is hidden (e.g. cell collapsed), hide the DWM thumbnail.
         if (!NativeMethods.IsWindowVisible(_host.Hwnd))
@@ -99,7 +103,7 @@ internal sealed class ThumbnailSlot
                 dwFlags = NativeMethods.DWM_TNP_VISIBLE,
                 fVisible = false
             };
-            int hr = NativeMethods.DwmUpdateThumbnailProperties(_thumbId, ref hide);
+            int hr = NativeMethods.DwmUpdateThumbnailProperties(_thumbnail.Handle, ref hide);
             if (hr == 0)
             {
                 _hasAppliedState = true;
@@ -138,7 +142,7 @@ internal sealed class ThumbnailSlot
             rcDestination = destination,
             fVisible = true
         };
-        int updateHr = NativeMethods.DwmUpdateThumbnailProperties(_thumbId, ref props);
+        int updateHr = NativeMethods.DwmUpdateThumbnailProperties(_thumbnail.Handle, ref props);
         if (updateHr == 0)
         {
             _hasAppliedState = true;
@@ -175,32 +179,13 @@ internal sealed class ThumbnailSlot
         Identity = identity;
     }
 
-    internal void MarkPinned()
+    private IntPtr AcquireThumbnail(IntPtr sourceHwnd)
     {
-        IsPinned = true;
-    }
+        if (_host.Hwnd == IntPtr.Zero || sourceHwnd == IntPtr.Zero)
+            return IntPtr.Zero;
 
-    internal void Unpin() => IsPinned = false;
-
-    private bool TryRegisterThumbnail()
-    {
-        int hr = NativeMethods.DwmRegisterThumbnail(_ownerHwnd, SourceHwnd, out var id);
-        if (hr != 0) return false;
-
-        _thumbId = id;
-        _hasAppliedState = false;
-        _lastVisible = false;
-        _lastDestination = default;
-        return true;
-    }
-
-    private void UnregisterThumbnail()
-    {
-        if (_thumbId == IntPtr.Zero)
-            return;
-
-        NativeMethods.DwmUnregisterThumbnail(_thumbId);
-        _thumbId = IntPtr.Zero;
+        int hr = NativeMethods.DwmRegisterThumbnail(_ownerHwnd, sourceHwnd, out IntPtr id);
+        return hr >= 0 ? id : IntPtr.Zero;
     }
 
     private void ResetSourceInfo()
@@ -209,8 +194,7 @@ internal sealed class ThumbnailSlot
         SourceTitle = string.Empty;
         SourceProcessName = string.Empty;
         Identity = null;
-        UnresolvedState = null;
-        IsPinned = false;
+        Intent = null;
     }
 
     private static bool RectEquals(NativeMethods.RECT a, NativeMethods.RECT b) =>

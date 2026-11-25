@@ -19,7 +19,7 @@
 
 ## Verification
 
-- 通常の CLI 確認では次の Release build/test コマンドを使う。アプリの起動は、画面を使う開発者が意図して行う場合に限る。
+- 通常の CLI 確認では次の Release build/test コマンドを使う。ウィンドウが必要な検証は PowerShell 7 の `.\packaging\start-development.ps1` で行う。返された PID を既存のデバッガで使用し、検証データは返された隔離状態ファイルに限定する。Display 3 を確保できない場合も、ウィンドウを必要としない検証は続ける。
 
   ```powershell
   dotnet build .\WindowThumbWall.csproj -c Release

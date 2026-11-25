@@ -144,8 +144,11 @@
                     </DataTemplate>
                 </Button.ContentTemplate>
             </Button>
-            <TextBlock Grid.Row="6" x:Name="StateNotice" Visibility="Collapsed"
-                       Foreground="#FFC074" TextWrapping="Wrap" Margin="0,6,0,0"/>
+            <StackPanel Grid.Row="6" x:Name="StateStatusPanel" Visibility="Collapsed" Margin="0,6,0,0">
+                <TextBlock x:Name="StateNotice" Foreground="#FFC074" TextWrapping="Wrap"/>
+                <Button x:Name="StateRetryButton" Click="StateRetryButton_Click"
+                        HorizontalAlignment="Left" Padding="8,3" Margin="0,5,0,0"/>
+            </StackPanel>
         </Grid>
 
         <GridSplitter Grid.Column="1" x:Name="Splitter" Width="4"

@@ -6,6 +6,14 @@ namespace WindowThumbWall;
 
 internal static class NativeMethods
 {
+    internal const uint SWP_NOSIZE = 0x0001;
+    internal const uint SWP_NOZORDER = 0x0004;
+    internal const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
     // ── DWM Thumbnail ────────────────────────────────────────────
 
     [DllImport("dwmapi.dll")]
