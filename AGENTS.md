@@ -13,6 +13,12 @@
 - Keep public product behavior and privacy claims consistent with the implementation. Distinguish source changes, local verification, CI publication, and runtime acceptance.
 - User-facing explanations are in Japanese; internal reasoning and tool decisions are in English.
 
+## Pull request reviews
+
+- Once an automated review is requested on a pull request, wait for the reviewer to submit its result before merging. Do not use manual merge or auto-merge while the request is pending. For pull requests expected to receive automated review, enable auto-merge only after this review gate is satisfied. An empty review status, passing checks, or a timeout cannot satisfy the request.
+- Read the submitted review and its inline comments. Resolve actionable findings and record why any other findings require no change. Verify that the review covers the final head commit. If the head changes after review, obtain a new automated review for the new head before merging.
+- Check the current review state and final head immediately before performing the normal protected merge. If the requested review fails or is unavailable, keep the PR open and restore the review route.
+
 ## Maintained verification commands
 
 ~~~powershell
