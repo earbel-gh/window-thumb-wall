@@ -133,6 +133,10 @@ jobs:
           dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build
           if ($LASTEXITCODE -ne 0) { throw 'Test project tests failed.' }
 
+      - name: Test Store draft protection
+        shell: pwsh
+        run: .\packaging\test-verify-store-submission-slot.ps1
+
       - name: Install WiX
         run: |
           dotnet tool install --global wix --version 7.0.0
@@ -294,17 +298,23 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $previousMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-v0.6.10-win-x64.msi'
           $currentMsi = (Resolve-Path -LiteralPath "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-x64.msi").Path
+          $projectVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/Version').Node.InnerText
+          $assemblyVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/AssemblyVersion').Node.InnerText
           $expectedFileVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/FileVersion').Node.InnerText
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             # Bake the target version into the isolated candidate without editing version files.
+            if ($projectVersion -notmatch '^\d+\.\d+\.\d+$' -or
+                $assemblyVersion -cne "$projectVersion.0" -or
+                $expectedFileVersion -cne "$projectVersion.0") {
+              throw 'Project, assembly, and file versions must agree for the development upgrade fixture.'
+            }
             $candidateMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-upgrade-candidate-win-x64.msi'
             $publishDir = Join-Path $env:RUNNER_TEMP 'window-thumb-wall-upgrade-candidate-x64'
-            $expectedFileVersion = '0.6.11.0'
             dotnet publish WindowThumbWall.csproj -c Release -r win-x64 --self-contained -o "$publishDir" `
-              -p:PublishSingleFile=false -p:Version=0.6.11 -p:AssemblyVersion=0.6.11.0 -p:FileVersion=0.6.11.0
+              -p:PublishSingleFile=false -p:Version=$projectVersion -p:AssemblyVersion=$assemblyVersion -p:FileVersion=$expectedFileVersion
             if ($LASTEXITCODE -ne 0) { throw 'Could not publish the development upgrade fixture.' }
             wix build packaging\WindowThumbWall.wxs -acceptEula wix7 -arch x64 -ext WixToolset.UI.wixext `
-              -d PublishDir="$publishDir" -d ProductVersion=0.6.11.0 -o "$candidateMsi"
+              -d PublishDir="$publishDir" -d ProductVersion=$assemblyVersion -o "$candidateMsi"
             if ($LASTEXITCODE -ne 0) { throw 'Could not build the development upgrade fixture.' }
             & .\packaging\verify-msi-payload.ps1 -MsiPath $candidateMsi
             $currentMsi = $candidateMsi
