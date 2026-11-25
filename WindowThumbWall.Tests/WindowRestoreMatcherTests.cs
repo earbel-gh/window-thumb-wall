@@ -135,9 +135,9 @@ public sealed class WindowRestoreMatcherTests
     [Fact]
     public void Match_PrioritizesLiveMatchOverFuzzyClaimOnSameWindow()
     {
-        SlotState fuzzy = Saved("Project planning dashboard", Identity(11, 42, 123));
-        SlotState live = Saved("Old tab title", Identity(22, 84, 456));
-        WindowInfo candidate = Window(22, fuzzy.Title, Identity(22, 84, 456));
+        SlotState fuzzy = Saved("Project planning dashboards", Identity(11, 42, 123));
+        SlotState live = Saved("Project planning dashboard", Identity(22, 84, 456));
+        WindowInfo candidate = Window(22, live.Title, Identity(22, 84, 456));
 
         var match = Assert.Single(WindowRestoreMatcher.Match([fuzzy, live], [candidate]));
 
@@ -217,14 +217,80 @@ public sealed class WindowRestoreMatcherTests
     }
 
     [Fact]
-    public void Match_UsesLastBindingIdentityForValidatedHandleMatch()
+    public void Match_UsesLastBindingIdentityWhenExactTitleStillMatches()
     {
-        SlotState saved = Saved("Old tab title", Identity(null, null, null), lastBindingIdentity: Identity(11, 42, 123));
-        WindowInfo candidate = Window(11, "Current title", Identity(11, 42, 123));
+        SlotState saved = Saved("Current title", Identity(null, null, null), lastBindingIdentity: Identity(11, 42, 123));
+        WindowInfo candidate = Window(11, " current   title ", Identity(11, 42, 123));
 
         IReadOnlyDictionary<int, WindowInfo> matches = WindowRestoreMatcher.Match([saved], [candidate]);
 
         Assert.Same(candidate, Assert.Single(matches).Value);
+    }
+
+    [Fact]
+    public void Match_DoesNotTrustReusedHandleForDifferentTitleInSameProcess()
+    {
+        SlotState saved = Saved("WhatsApp - Google Chrome", Identity(11, 42, 123));
+        WindowInfo reused = Window(11, "Team calendar - Google Chrome", Identity(11, 42, 123));
+
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [reused]));
+    }
+
+    [Fact]
+    public void Match_DoesNotTrustReusedLastBindingHandleForDifferentTitleInSameProcess()
+    {
+        SlotState saved = Saved(
+            "WhatsApp - Google Chrome",
+            Identity(null, null, null),
+            lastBindingIdentity: Identity(11, 42, 123));
+        WindowInfo reused = Window(11, "Team calendar - Google Chrome", Identity(11, 42, 123));
+
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [reused]));
+    }
+
+    [Fact]
+    public void Match_DoesNotTrustExactHandleWithoutStrongAppIdentity()
+    {
+        SlotState saved = Saved("Project planning", new WindowIdentity
+        {
+            Handle = 11,
+            ProcessId = 42,
+            ProcessStartTimeUtcTicks = 123
+        });
+        WindowInfo candidate = Window(11, saved.Title, Identity(11, 42, 123));
+
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [candidate]));
+    }
+
+    [Fact]
+    public void Match_DoesNotTrustExactHandleForGenericTitle()
+    {
+        SlotState saved = Saved("New Tab - Google Chrome", Identity(11, 42, 123));
+        WindowInfo candidate = Window(11, "New Tab - Google Chrome", Identity(11, 42, 123));
+
+        Assert.Empty(WindowRestoreMatcher.Match([saved], [candidate]));
+    }
+
+    [Fact]
+    public void DetachedRuleMatchStateDropsPersistedHandleButKeepsProcessIdentity()
+    {
+        var rules = new WindowSlotRules();
+        SlotState attached = Saved("WhatsApp - Google Chrome", Identity(11, 42, 123));
+        rules.SetRule(attached);
+        WindowRuleState rule = Assert.Single(rules.All);
+
+        SlotState placeholder = WindowSlotRules.CreatePlaceholder(rule);
+        SlotState matchState = rules.GetMatchState(placeholder);
+        WindowInfo reused = Window(11, "Team calendar - Google Chrome", Identity(11, 42, 123));
+
+        Assert.Null(placeholder.Identity?.Handle);
+        Assert.Null(matchState.Identity?.Handle);
+        Assert.Equal(42u, matchState.Identity?.ProcessId);
+        Assert.Equal(123L, matchState.Identity?.ProcessStartTimeUtcTicks);
+        Assert.Equal(@"C:\Program Files\Chrome\chrome.exe", matchState.Identity?.ExecutablePath);
+        Assert.Equal("Chrome_WidgetWin_1", matchState.Identity?.WindowClassName);
+        Assert.Equal("chrome.app", matchState.Identity?.AppUserModelId);
+        Assert.Empty(WindowRestoreMatcher.Match([matchState], [reused]));
     }
 
     [Fact]

@@ -47,6 +47,47 @@ public sealed class SettingsWindowTests
         });
     }
 
+    [Fact]
+    public void NotificationStatusGrowth_KeepsInitialWidthAndAllowsContentHeightGrowth()
+    {
+        RunInSta(() =>
+        {
+            SettingsWindow window = new(
+                osNotificationAttentionEnabled: true,
+                notificationAvailabilityText: "ready",
+                _ => { });
+            const double initialWidth = 420;
+            const double initialHeight = 260;
+
+            Assert.Equal(SizeToContent.WidthAndHeight, window.SizeToContent);
+            window.KeepInitialWidthAndGrowHeight(initialWidth, initialHeight);
+
+            Assert.Equal(SizeToContent.Height, window.SizeToContent);
+            Assert.Equal(initialWidth, window.Width);
+            Assert.Equal(initialWidth, window.MinWidth);
+            Assert.Equal(initialHeight, window.MinHeight);
+            Assert.Equal(ResizeMode.NoResize, window.ResizeMode);
+            Assert.Equal(WindowStartupLocation.CenterOwner, window.WindowStartupLocation);
+
+            Grid root = Assert.IsType<Grid>(window.Content);
+            TextBlock status = Assert.Single(root.Children.OfType<TextBlock>(), text =>
+                text.Text.Contains("ready", StringComparison.Ordinal));
+            Assert.Equal(TextWrapping.Wrap, status.TextWrapping);
+            Size available = new(initialWidth, double.PositiveInfinity);
+            root.Measure(available);
+            root.Arrange(new Rect(root.DesiredSize));
+            double shortContentHeight = root.DesiredSize.Height;
+
+            window.UpdateNotificationAvailability(
+                string.Join(" ", Enumerable.Repeat("notification listener status details", 12)));
+            root.InvalidateMeasure();
+            root.Measure(available);
+
+            Assert.True(root.DesiredSize.Height > shortContentHeight,
+                $"Expected wrapped notification status to grow the content from {shortContentHeight} to more than {root.DesiredSize.Height}.");
+        });
+    }
+
     private static void RunInSta(Action action)
     {
         Exception? captured = null;

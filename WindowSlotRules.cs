@@ -64,7 +64,7 @@ internal sealed class WindowSlotRules
             IsPinned = true,
             ProcessName = rule.ProcessName,
             Title = rule.TitleAnchor,
-            Identity = rule.Identity,
+            Identity = rule.Identity?.WithoutHandle(),
             LastBindingIdentity = intent.LastBindingIdentity
         };
     }
@@ -76,7 +76,7 @@ internal sealed class WindowSlotRules
         IsPinned = true,
         ProcessName = rule.ProcessName,
         Title = rule.TitleAnchor,
-        Identity = rule.Identity
+        Identity = rule.Identity?.WithoutHandle()
     };
 
     internal static bool IsLegacyAppMatch(SlotState intent, WindowInfo window) =>
