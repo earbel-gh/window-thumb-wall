@@ -15,6 +15,8 @@
 
 ## Pull request reviews
 
+For pull requests with a recorded automated review request, this section governs the merge decision if the [generated integration workflow](.github/git-workflow.md) differs.
+
 - Once an automated review is requested on a pull request, wait for the reviewer to submit its result before merging. Do not use manual merge or auto-merge while the request is pending. For pull requests expected to receive automated review, enable auto-merge only after this review gate is satisfied. An empty review status, passing checks, or a timeout cannot satisfy the request.
 - Read the submitted review and its inline comments. Resolve actionable findings and record why any other findings require no change. Verify that the review covers the final head commit. If the head changes after review, obtain a new automated review for the new head before merging.
 - Check the current review state and final head immediately before performing the normal protected merge. If the requested review fails or is unavailable, keep the PR open and restore the review route.
