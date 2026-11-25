@@ -111,8 +111,24 @@ jobs:
       - name: Determine version
         env:
           VERIFIED_TAG: ${{ steps.release_identity.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERIFY_PREVIOUS_MSI_UPGRADE: ${{ inputs.verify_previous_msi_upgrade }}
+          VERIFY_STORE_PACKAGE: ${{ inputs.verify_store_package }}
         run: |
-          $ver = if ($env:VERIFIED_TAG) { $env:VERIFIED_TAG } else { 'dev' }
+          if ($env:VERIFIED_TAG) {
+            $ver = $env:VERIFIED_TAG
+          } elseif ($env:EVENT_NAME -eq 'workflow_dispatch' -and
+                    $env:VERIFY_PREVIOUS_MSI_UPGRADE -eq 'true' -and
+                    $env:VERIFY_STORE_PACKAGE -eq 'true') {
+            [xml]$project = Get-Content -LiteralPath WindowThumbWall.csproj
+            $projectVersion = [string]$project.Project.PropertyGroup.Version
+            if ($projectVersion -notmatch '^\d+\.\d+\.\d+$') {
+              throw "Frozen project version is not a stable three-part version: '$projectVersion'."
+            }
+            $ver = "v$projectVersion"
+          } else {
+            $ver = 'dev'
+          }
           "RELEASE_ARTIFACT_LABEL=$ver" | Out-File $env:GITHUB_ENV -Append
           Write-Host "RELEASE_ARTIFACT_LABEL=$ver"
 
@@ -260,10 +276,12 @@ jobs:
           }
 
       - name: Verify x64 MSI lifecycle
+        id: x64_msi_lifecycle
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $msiPath = (Resolve-Path "$env:DIST_DIR\WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-x64.msi").Path
+          $msiSha256 = (Get-FileHash -LiteralPath $msiPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $installLog = Join-Path $env:DIST_DIR 'msi-install.log'
           $uninstallLog = Join-Path $env:DIST_DIR 'msi-uninstall.log'
           $installedExe = 'C:\Program Files\WindowThumbWall\WindowThumbWall.exe'
@@ -296,10 +314,14 @@ jobs:
               if (Test-Path -LiteralPath $installedExe) { throw "Installed executable remains after uninstall: $installedExe" }
             }
           }
+          "msi_sha256=$msiSha256" >> $env:GITHUB_OUTPUT
+          Write-Host "Verified fresh x64 MSI lifecycle with SHA-256 $msiSha256"
 
       - name: Verify v0.6.10 MSI major upgrade preserves user state
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name != 'v0.6.10') || (github.event_name == 'workflow_dispatch' && inputs.verify_previous_msi_upgrade)
         shell: pwsh
+        env:
+          SMOKE_TESTED_MSI_SHA256: ${{ steps.x64_msi_lifecycle.outputs.msi_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
           $previousMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-v0.6.10-win-x64.msi'
@@ -307,25 +329,16 @@ jobs:
           $projectVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/Version').Node.InnerText
           $assemblyVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/AssemblyVersion').Node.InnerText
           $expectedFileVersion = (Select-Xml -Path WindowThumbWall.csproj -XPath '/Project/PropertyGroup/FileVersion').Node.InnerText
-          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
-            # Bake the target version into the isolated candidate without editing version files.
-            if ($projectVersion -notmatch '^\d+\.\d+\.\d+$' -or
-                $assemblyVersion -cne "$projectVersion.0" -or
-                $expectedFileVersion -cne "$projectVersion.0") {
-              throw 'Project, assembly, and file versions must agree for the development upgrade fixture.'
-            }
-            $candidateMsi = Join-Path $env:RUNNER_TEMP 'WindowThumbWall-upgrade-candidate-win-x64.msi'
-            $publishDir = Join-Path $env:RUNNER_TEMP 'window-thumb-wall-upgrade-candidate-x64'
-            dotnet publish WindowThumbWall.csproj -c Release -r win-x64 --self-contained -o "$publishDir" `
-              -p:PublishSingleFile=false -p:Version=$projectVersion -p:AssemblyVersion=$assemblyVersion -p:FileVersion=$expectedFileVersion
-            if ($LASTEXITCODE -ne 0) { throw 'Could not publish the development upgrade fixture.' }
-            wix build packaging\WindowThumbWall.wxs -acceptEula wix7 -arch x64 -ext WixToolset.UI.wixext `
-              -d PublishDir="$publishDir" -d ProductVersion=$assemblyVersion -o "$candidateMsi"
-            if ($LASTEXITCODE -ne 0) { throw 'Could not build the development upgrade fixture.' }
-            & .\packaging\verify-msi-payload.ps1 -MsiPath $candidateMsi
-            $currentMsi = $candidateMsi
+          if ($projectVersion -notmatch '^\d+\.\d+\.\d+$' -or
+              $assemblyVersion -cne "$projectVersion.0" -or
+              $expectedFileVersion -cne "$projectVersion.0") {
+            throw 'Project, assembly, and file versions must agree for the MSI upgrade check.'
           }
-
+          $currentMsiSha256 = (Get-FileHash -LiteralPath $currentMsi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($currentMsiSha256 -cne $env:SMOKE_TESTED_MSI_SHA256) {
+            throw 'The upgrade must use the exact x64 MSI verified by the fresh-install test.'
+          }
+          Write-Host "Testing x64 MSI upgrade with SHA-256 $currentMsiSha256"
           $previousUri = 'https://github.com/tsuchim/window-thumb-wall/releases/download/v0.6.10/WindowThumbWall-v0.6.10-win-x64.msi'
           Invoke-WebRequest -Uri $previousUri -OutFile $previousMsi
           & .\packaging\test-msi-major-upgrade.ps1 `
@@ -344,6 +357,31 @@ jobs:
             if (-not (Test-Path -LiteralPath $metadataPath) -or (Get-Item -LiteralPath $metadataPath).Length -eq 0) {
               throw "Expected release metadata was not generated: $_"
             }
+          }
+
+      - name: Verify release-shaped candidate artifacts
+        if: github.event_name == 'workflow_dispatch' && inputs.verify_previous_msi_upgrade && inputs.verify_store_package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_ARTIFACT_LABEL -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Full manual preflight requires a versioned artifact label; found '$env:RELEASE_ARTIFACT_LABEL'."
+          }
+          $expectedArtifacts = foreach ($arch in @('x64', 'arm64')) {
+            foreach ($extension in @('zip', 'msi', 'msix')) {
+              Join-Path $env:DIST_DIR "WindowThumbWall-$env:RELEASE_ARTIFACT_LABEL-win-$arch.$extension"
+            }
+          }
+          foreach ($artifact in $expectedArtifacts) {
+            if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+              throw "Expected release-shaped artifact is missing: $artifact"
+            }
+            $file = Get-Item -LiteralPath $artifact
+            if ($file.Length -le 0) {
+              throw "Expected release-shaped artifact is empty: $artifact"
+            }
+            $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            "Verified $artifact ($($file.Length) bytes, SHA-256 $hash)" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
       - name: Write release provenance

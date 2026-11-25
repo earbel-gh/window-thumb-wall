@@ -8,45 +8,58 @@ A new signed annotated tag triggers the public release workflow. Treat the tag
 push as a release action. Keep existing tags and their source history intact,
 including tags whose release runs stopped.
 
-### Evidence required before the tag
+### Test the final candidate before merge
 
 1. Align the project version, both package manifests, and the localized release
    notes. Run the repository's Windows tests and release fixtures against the
    candidate. Follow the developer guide for changes that affect installed
    runtime behavior.
-2. Review the complete candidate. Wait for any requested automated review on
-   the final pull request head. Address the comments, rerun affected checks,
-   and obtain another review if the head changes. Merge through the repository
-   protections and record the final reviewed head, resulting main commit,
-   last review request, submitted review, and disposition of the findings.
-3. Run **Build Release Artifacts** on that exact main commit with both checks
-   enabled. Review the run's job and step outcomes.
+2. Push the signed candidate to its authorized branch. Run **Build Release
+   Artifacts** with both checks enabled and verify the completed run from a
+   clean checkout of that candidate before opening the integration PR.
+
+```powershell
+gh workflow run build-release-artifacts.yml --ref <candidate-branch> -f verify_previous_msi_upgrade=true -f verify_store_package=true
+.\packaging\verify-release-preflight.ps1 -ReleaseTag vX.Y.Z -RunId <candidate-run-id> -CandidateBranch <candidate-branch>
+```
+
+With both checks enabled, the workflow builds the six versioned ZIP, MSI and
+MSIX packages and the localized metadata through the tagged-release build
+steps. It records the SHA-256 of the x64 MSI after fresh-install and uninstall
+verification and requires the real v0.6.10 upgrade to use those same bytes.
+The Store package job uses the tagged-release runner and build steps to verify
+the x64 and ARM64 upload bundle version and hash. The rehearsal retains its
+unsigned packages as Actions artifacts for inspection. It grants read-only
+repository permissions and receives zero Store credentials. The submission and
+GitHub draft steps must be skipped.
+
+3. Review the complete candidate. Once automated review is requested, wait for
+   the result on the final PR head and address its findings. A head change
+   requires a fresh hosted run and automated review for the new head. Verify
+   both results from the final candidate checkout immediately before the normal
+   protected merge and record the review dispositions.
+
+```powershell
+.\packaging\verify-release-preflight.ps1 -ReleaseTag vX.Y.Z -RunId <candidate-run-id> -CandidateBranch <candidate-branch> -PullRequest <pr-number>
+```
+
+### Verify protected main before the tag
+
+4. Repeat the same full workflow on the exact protected main merge commit.
+   From its clean checkout, verify that the reviewed and tested candidate
+   tree matches main and that both independent runs passed on their own
+   commits.
 
 ```powershell
 gh workflow run build-release-artifacts.yml --ref main -f verify_previous_msi_upgrade=true -f verify_store_package=true
+.\packaging\verify-release-preflight.ps1 -ReleaseTag vX.Y.Z -RunId <main-run-id> -CandidateRunId <candidate-run-id> -PullRequest <pr-number>
 ```
 
-The distribution job must pass the Windows tests, release fixtures, x64 and
-ARM64 package builds, and the real x64 MSI upgrade from v0.6.10. The separate
-`store-package-check` job runs the Store packaging steps on the same runner
-label as tagged releases. It verifies the x64 and ARM64 Store upload bundle
-version and SHA-256. A package-only run receives read-only GitHub permissions
-and no Store credentials. Its submission steps, the regular `store` job, and
-the GitHub draft job must be skipped.
-
-4. Run the read-only verifier from the clean checkout of the approved main
-   commit. It checks the exact merged PR, automated review timing, the
-   workflow dispatch, and the required jobs and steps.
-
-```powershell
-.\packaging\verify-release-preflight.ps1 -ReleaseTag vX.Y.Z -RunId <run-id> -PullRequest <pr-number>
-```
-
-Record the verifier result, main commit, source tree, pull request, run and
-attempt. Read the Store package job summary and record the bundle SHA-256.
-Treat skipped required steps, mismatched source, and uncertain results as
-incomplete. Request approval for that exact public release after the evidence
-is complete, then use the signed tag procedure.
+Record both run IDs and attempts, the package and Store bundle hashes from the
+summaries, the verifier result, PR, final reviewed head, and main commit and
+tree. A failed or skipped required step, mismatched source, or uncertain result
+keeps the release incomplete. Request approval for the exact public release
+only after this evidence is complete.
 
 ### Evidence after the tag
 
@@ -113,12 +126,9 @@ It confirms removal of the old ProductCode, the new release version, and
 byte-for-byte preservation of legacy settings. A failed check holds both
 publication jobs.
 
-For pre-integration evidence, dispatch **Build Release Artifacts** on the exact
-candidate branch with `verify_previous_msi_upgrade` enabled. Its isolated
-x64 fixture uses the target 0.6.11 version and candidate source. The normal
-development outputs keep their existing version, and the dispatch cannot reach
-either publication job. The signed-tag build repeats the gate with the actual
-release MSI.
+The fresh-install and upgrade steps consume the same x64 MSI in each run.
+Full rehearsal uses the version checked into the candidate, and a signed-tag
+run uses its verified release version.
 
 The standalone CI MSIX is packed directly by MakeAppx. Its manifest declares the English and Japanese resource languages explicitly. The Visual Studio package project resolves its own resource placeholder during MSBuild.
 
@@ -150,19 +160,21 @@ Each file can contain short markdown bullets or short prose describing what chan
 
 ## Tag and Push
 After approval for the exact version, rerun the preflight immediately before
-creating the signed tag. Set the approved version, hosted run ID, and merged
-pull request number. Use the repository's trusted SSH signer and verify the
-tag against its reviewed commit before pushing. Run the block as a unit.
+creating the signed tag. Set the approved version, both hosted run IDs, and
+the merged pull request number. Use the repository's trusted SSH signer and
+verify the tag against its reviewed commit before pushing. Run the block as
+a unit.
 
 ```powershell
 & {
     $ErrorActionPreference = 'Stop'
     $releaseTag = 'vX.Y.Z'
-    $runId = '<run-id>'
+    $runId = '<main-run-id>'
+    $candidateRunId = '<candidate-run-id>'
     $pullRequest = '<pr-number>'
-    $evidence = .\packaging\verify-release-preflight.ps1 -ReleaseTag $releaseTag -RunId $runId -PullRequest $pullRequest
+    $evidence = .\packaging\verify-release-preflight.ps1 -ReleaseTag $releaseTag -RunId $runId -CandidateRunId $candidateRunId -PullRequest $pullRequest
     if ($evidence.Preflight -cne 'passed') { throw 'Release preflight did not pass.' }
-    $audit = "Preflight run $($evidence.RunId) attempt $($evidence.RunAttempt), PR #$($evidence.PullRequest), Copilot review $($evidence.CopilotReviewId)"
+    $audit = "Candidate run $($evidence.CandidateRunId) attempt $($evidence.CandidateRunAttempt), main run $($evidence.RunId) attempt $($evidence.RunAttempt), PR #$($evidence.PullRequest), Copilot review $($evidence.CopilotReviewId)"
     git tag -s $evidence.ReleaseTag $evidence.HeadSha -m "Release $($evidence.ReleaseTag)" -m $audit
     if ($LASTEXITCODE -ne 0) { throw 'Signed tag creation failed.' }
     git -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers verify-tag $evidence.ReleaseTag
@@ -170,7 +182,7 @@ tag against its reviewed commit before pushing. Run the block as a unit.
     $tagTarget = git rev-parse --verify "$($evidence.ReleaseTag)^{commit}"
     if ($LASTEXITCODE -ne 0 -or $tagTarget -cne $evidence.HeadSha) { throw 'The tag target does not match the preflight commit.' }
     $tagRef = "refs/tags/$($evidence.ReleaseTag)"
-    git push origin "${tagRef}:$tagRef"
+    git -c push.followTags=false push origin "${tagRef}:$tagRef"
     if ($LASTEXITCODE -ne 0) { throw 'Tag push failed. Read the remote tag and workflow state before retrying.' }
 }
 ```
