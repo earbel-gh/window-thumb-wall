@@ -38,6 +38,9 @@ permissions:
 jobs:
   publish:
     runs-on: windows-2025-vs2026
+    concurrency:
+      group: window-thumb-wall-store-publication
+      queue: max
     env:
       STORE_PRODUCT_ID: ${{ vars.MSSTORE_PRODUCT_ID }}
       RELEASE_TAG: ${{ inputs.tag }}
@@ -260,15 +263,25 @@ jobs:
             throw 'The local and authoritative remote release tag object do not match the frozen tag.'
           }
 
-      - name: MSStore Create Draft Submission
+      - name: Configure Store CLI and check for an existing submission
         shell: pwsh
         env:
-          PACKAGE_SHA256: ${{ steps.store_package.outputs.package_sha256 }}
           STORE_PRODUCT_ID_NORMALIZED: ${{ steps.prereq.outputs.store_product_id }}
           AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
           SELLER_ID: ${{ secrets.SELLER_ID }}
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
           AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed with exit code $LASTEXITCODE." }
+          & .\packaging\verify-store-submission-slot.ps1 -ProductId $env:STORE_PRODUCT_ID_NORMALIZED
+
+      - name: MSStore Create Draft Submission
+        shell: pwsh
+        env:
+          PACKAGE_SHA256: ${{ steps.store_package.outputs.package_sha256 }}
+          STORE_PRODUCT_ID_NORMALIZED: ${{ steps.prereq.outputs.store_product_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $packageDir = Join-Path $PWD 'packaging\AppPackages'
@@ -277,8 +290,6 @@ jobs:
           $package = $packages[0]
           $actualSha256 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha256 -cne $env:PACKAGE_SHA256) { throw 'The Store package changed after architecture verification.' }
-          msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
-          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed with exit code $LASTEXITCODE." }
           msstore publish $package.FullName -id $env:STORE_PRODUCT_ID_NORMALIZED --noCommit -v
           if ($LASTEXITCODE -ne 0) { throw "msstore publish failed with exit code $LASTEXITCODE." }
 

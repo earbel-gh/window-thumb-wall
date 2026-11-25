@@ -165,6 +165,10 @@ For an existing live free Microsoft Store product, the signed-tag build calls
 [release-to-store.yml](../.github/workflows/release-to-store.yml) only after the
 required tests and distribution builds succeed.
 
+Tagged releases queue Store jobs for this product. After authenticating, the Store workflow checks for existing pending
+Store state and leaves any pending draft untouched. The commit receipt ID records
+the submission commit. Track Microsoft certification separately.
+
 Behavior:
 1. The workflow checks out the frozen commit and verifies the source tree.
 2. The three-part tag version is normalized to a four-part Store manifest version.
