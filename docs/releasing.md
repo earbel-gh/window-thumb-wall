@@ -4,19 +4,66 @@ WindowThumbWall uses a tag-driven release flow. Pushing a version tag builds all
 
 ## Release Gate
 
-A normal push of a new `vX.Y.Z` tag is the release trigger. GitHub Actions verifies
-the annotated tag against the SSH signer list from protected main and binds the
-tag object to its commit and source tree. Windows tests, distribution builds and
-MSI lifecycle verification precede the Store operation. The Store job verifies
-its package and the tag again before submission. The draft GitHub Release
-requires the same successful run and verifies the release provenance and all
-downloaded package hashes before attaching CI assets. A manual build dispatch
-is for verification and does not create a draft or submit to the Store.
+A new signed annotated tag triggers the public release workflow. Treat the tag
+push as a release action. Keep existing tags and their source history intact,
+including tags whose release runs stopped.
 
-The release run retains its provenance as a workflow artifact. It records the
-exact tag object, commit, tree, toolchain, and SHA-256 values and file sizes.
-Review the draft and actual Store submission separately before announcing the
-release. Store submission is followed by Microsoft certification.
+### Evidence required before the tag
+
+1. Align the project version, both package manifests, and the localized release
+   notes. Run the repository's Windows tests and release fixtures against the
+   candidate. Follow the developer guide for changes that affect installed
+   runtime behavior.
+2. Review the complete candidate. Wait for any requested automated review on
+   the final pull request head. Address the comments, rerun affected checks,
+   and obtain another review if the head changes. Merge through the repository
+   protections and record the final reviewed head, resulting main commit,
+   last review request, submitted review, and disposition of the findings.
+3. Run **Build Release Artifacts** on that exact main commit with both checks
+   enabled. Review the run's job and step outcomes.
+
+```powershell
+gh workflow run build-release-artifacts.yml --ref main -f verify_previous_msi_upgrade=true -f verify_store_package=true
+```
+
+The distribution job must pass the Windows tests, release fixtures, x64 and
+ARM64 package builds, and the real x64 MSI upgrade from v0.6.10. The separate
+`store-package-check` job runs the Store packaging steps on the same runner
+label as tagged releases. It verifies the x64 and ARM64 Store upload bundle
+version and SHA-256. A package-only run receives read-only GitHub permissions
+and no Store credentials. Its submission steps, the regular `store` job, and
+the GitHub draft job must be skipped.
+
+4. Run the read-only verifier from the clean checkout of the approved main
+   commit. It checks the exact merged PR, automated review timing, the
+   workflow dispatch, and the required jobs and steps.
+
+```powershell
+.\packaging\verify-release-preflight.ps1 -ReleaseTag vX.Y.Z -RunId <run-id> -PullRequest <pr-number>
+```
+
+Record the verifier result, main commit, source tree, pull request, run and
+attempt. Read the Store package job summary and record the bundle SHA-256.
+Treat skipped required steps, mismatched source, and uncertain results as
+incomplete. Request approval for that exact public release after the evidence
+is complete, then use the signed tag procedure.
+
+### Evidence after the tag
+
+GitHub Actions verifies the new annotated tag against the trusted SSH signer
+list from protected main and freezes the source identity. The tag run verifies
+the release packages and their provenance. The separate Store job checks and
+builds the exact Store package. It observes the pending submission state
+before making a write. Preserve any existing draft and reconcile an uncertain
+prior effect in Partner Center before a retry.
+
+Record the Store upload package SHA-256, manifest version, architecture set,
+and actual provider submission ID and state. Track certification and public
+Store availability separately. The GitHub draft job requires the same
+successful tag run and verifies all six distribution assets against the
+artifact manifest. Verify the draft and its six assets plus provenance before
+publishing it, then read back the public release and update its release
+tracking.
 
 ### Recovering a Partial GitHub Draft
 
@@ -95,16 +142,30 @@ How they are used:
 Each file can contain short markdown bullets or short prose describing what changed in that release. The metadata generator embeds that content into the generated release assets.
 
 ## Tag and Push
-1. Create an annotated tag with the repository's trusted SSH signer.
+After approval for the exact version, rerun the preflight immediately before
+creating the signed tag. Set the approved version, hosted run ID, and merged
+pull request number. Use the repository's trusted SSH signer and verify the
+tag against its reviewed commit before pushing. Run the block as a unit.
 
-```bash
-git tag -s v0.2.3 -m "Release v0.2.3"
-```
-
-2. Push the tag.
-
-```bash
-git push origin v0.2.3
+```powershell
+& {
+    $ErrorActionPreference = 'Stop'
+    $releaseTag = 'vX.Y.Z'
+    $runId = '<run-id>'
+    $pullRequest = '<pr-number>'
+    $evidence = .\packaging\verify-release-preflight.ps1 -ReleaseTag $releaseTag -RunId $runId -PullRequest $pullRequest
+    if ($evidence.Preflight -cne 'passed') { throw 'Release preflight did not pass.' }
+    $audit = "Preflight run $($evidence.RunId) attempt $($evidence.RunAttempt), PR #$($evidence.PullRequest), Copilot review $($evidence.CopilotReviewId)"
+    git tag -s $evidence.ReleaseTag $evidence.HeadSha -m "Release $($evidence.ReleaseTag)" -m $audit
+    if ($LASTEXITCODE -ne 0) { throw 'Signed tag creation failed.' }
+    git -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers verify-tag $evidence.ReleaseTag
+    if ($LASTEXITCODE -ne 0) { throw 'Release tag signature verification failed.' }
+    $tagTarget = git rev-parse --verify "$($evidence.ReleaseTag)^{commit}"
+    if ($LASTEXITCODE -ne 0 -or $tagTarget -cne $evidence.HeadSha) { throw 'The tag target does not match the preflight commit.' }
+    $tagRef = "refs/tags/$($evidence.ReleaseTag)"
+    git push origin "${tagRef}:$tagRef"
+    if ($LASTEXITCODE -ne 0) { throw 'Tag push failed. Read the remote tag and workflow state before retrying.' }
+}
 ```
 
 ## Version Alignment Map
@@ -217,18 +278,22 @@ GitHub variable:
 
 The Azure AD app registration must already be authorized in Partner Center for the seller account.
 
-## Recommended Release Checklist
-1. Update [WindowThumbWall.csproj](../WindowThumbWall.csproj) `Version`, `AssemblyVersion`, and `FileVersion`.
-2. Update [packaging/AppxManifest.xml](../packaging/AppxManifest.xml) and [packaging/Package.appxmanifest](../packaging/Package.appxmanifest) to the same four-part version.
-3. Add `packaging/release-notes-<version>.md` or the localized `release-notes-ja/en-<version>.md` files if the release has user-visible changes.
-4. Update [docs/notification-attention-design.md](notification-attention-design.md) if notification matching or visual attention behavior changed.
-5. Add `packaging/release-highlights-<version>.md` or localized variants if you want explicit highlights instead of fallback content.
-6. Verify the required release evidence, then create and push the signed annotated `vX.Y.Z` tag.
-7. Read back the unchanged tag object, target commit, and source tree. Verify that the Store job committed its submission.
-8. Review the generated GitHub draft and check all six attached packages against the CI provenance hashes.
-9. Publish the verified draft. Track Store certification or availability separately in Partner Center.
-10. If you are updating the Microsoft Store listing text, copy from the generated Store metadata files.
-11. When packaging or notification behavior changed, run the local MSIX verification checklist in [developer-guide.md](developer-guide.md).
+## Local release fixtures
+
+Run the following in the product checkout before sharing the candidate.
+
+```powershell
+.\packaging\test-verify-release-tag.ps1
+.\packaging\test-reconcile-github-release.ps1
+.\packaging\test-verify-store-submission-slot.ps1
+.\packaging\test-verify-release-preflight.ps1
+```
+
+Generate and review the localized metadata with the local test command below.
+Use the developer guide's installed MSIX verification when packaging or
+notification behavior changes. For optional release highlights, use the
+matching versioned files under `packaging/`. If the Store listing is updated
+manually, use the generated Store metadata.
 
 ## Local Test Command
 You can generate the metadata locally before tagging.

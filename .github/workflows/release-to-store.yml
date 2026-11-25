@@ -21,15 +21,20 @@ on:
         description: Frozen release source tree ID
         required: true
         type: string
+      package_only:
+        description: Build and verify the Store package without publishing
+        required: false
+        default: false
+        type: boolean
     secrets:
       AZURE_AD_TENANT_ID:
-        required: true
+        required: false
       SELLER_ID:
-        required: true
+        required: false
       AZURE_AD_APPLICATION_CLIENT_ID:
-        required: true
+        required: false
       AZURE_AD_APPLICATION_SECRET:
-        required: true
+        required: false
 
 permissions:
   actions: read
@@ -39,18 +44,42 @@ jobs:
   publish:
     runs-on: windows-2025-vs2026
     concurrency:
-      group: window-thumb-wall-store-publication
+      group: ${{ inputs.package_only && 'window-thumb-wall-store-package-check' || 'window-thumb-wall-store-publication' }}
       queue: max
     env:
-      STORE_PRODUCT_ID: ${{ vars.MSSTORE_PRODUCT_ID }}
+      STORE_PRODUCT_ID: ${{ !inputs.package_only && vars.MSSTORE_PRODUCT_ID || '' }}
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_TAG_OBJECT: ${{ inputs.tag_object }}
       RELEASE_COMMIT: ${{ inputs.commit }}
       RELEASE_TREE: ${{ inputs.tree }}
+      PACKAGE_ONLY: ${{ inputs.package_only }}
 
     steps:
+      - name: Validate Store workflow request
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PACKAGE_ONLY -eq 'true') {
+            if ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch' -or $env:GITHUB_WORKFLOW -cne 'Build Release Artifacts') {
+              throw 'Package-only mode is permitted only from the Build Release Artifacts workflow_dispatch run.'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_TAG) -or -not [string]::IsNullOrWhiteSpace($env:RELEASE_TAG_OBJECT)) {
+              throw 'Package-only mode requires empty tag and tag_object inputs.'
+            }
+            if ($env:RELEASE_COMMIT -notmatch '^[0-9a-f]{40}$' -or $env:RELEASE_TREE -notmatch '^[0-9a-f]{40}$') {
+              throw 'Package-only mode requires frozen commit and tree object IDs.'
+            }
+          } elseif ($env:GITHUB_EVENT_NAME -cne 'push' -or
+              $env:GITHUB_REF -cne "refs/tags/$env:RELEASE_TAG" -or
+              $env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or
+              $env:RELEASE_TAG_OBJECT -notmatch '^[0-9a-f]{40}$' -or
+              $env:RELEASE_COMMIT -notmatch '^[0-9a-f]{40}$' -or
+              $env:RELEASE_TREE -notmatch '^[0-9a-f]{40}$') {
+            throw 'Publication requires a release tag and frozen tag, commit, and tree object IDs.'
+          }
+
       - name: Check earlier Store attempts before retry
-        if: github.run_attempt > 1
+        if: ${{ !inputs.package_only && github.run_attempt > 1 }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,27 +116,43 @@ jobs:
           if ($commit -cne $env:RELEASE_COMMIT -or $tree -cne $env:RELEASE_TREE) {
             throw 'The Store checkout does not match the frozen release commit and tree.'
           }
-          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+          if ($env:PACKAGE_ONLY -ne 'true' -and $env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
             throw 'The Store release tag must use vX.Y.Z.'
           }
 
       - name: Check Store product configuration
         id: prereq
+        if: ${{ !inputs.package_only }}
         shell: pwsh
+        env:
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
         run: |
           $ErrorActionPreference = 'Stop'
           $val = $env:STORE_PRODUCT_ID
           if (-not $val) { throw 'MSSTORE_PRODUCT_ID variable is missing from repository variables.' }
+          $requiredCredentials = @('AZURE_AD_TENANT_ID', 'SELLER_ID', 'AZURE_AD_APPLICATION_CLIENT_ID', 'AZURE_AD_APPLICATION_SECRET')
+          $missingCredentials = @($requiredCredentials | Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missingCredentials.Count -gt 0) { throw "Store credentials are missing: $($missingCredentials -join ', ')." }
           $normalized = $val.ToUpperInvariant()
           if ($val -ne $normalized) { Write-Host "Normalizing STORE_PRODUCT_ID to uppercase: $normalized" }
           "store_product_id=$normalized" >> $env:GITHUB_OUTPUT
 
-      - name: Derive Store version from release tag
+      - name: Derive Store package version
         id: versioning
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $parts = $env:RELEASE_TAG.Substring(1).Split('.')
+          if ($env:PACKAGE_ONLY -eq 'true') {
+            [xml]$project = Get-Content -LiteralPath 'WindowThumbWall.csproj'
+            $sourceVersion = $project.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+            if ($sourceVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'WindowThumbWall.csproj must provide a three-part package version for package-only mode.' }
+            $parts = $sourceVersion.Split('.')
+          } else {
+            $parts = $env:RELEASE_TAG.Substring(1).Split('.')
+          }
           $storeVersion = "$($parts[0]).$($parts[1]).$($parts[2]).0"
           Write-Host "Store manifest version: $storeVersion"
           "version=$storeVersion" >> $env:GITHUB_OUTPUT
@@ -124,9 +169,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found at $vswhere" }
-          $msbuild = & $vswhere -latest -prerelease -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw "vswhere failed with exit code $LASTEXITCODE." }
+          $vswhereOutput = @(& $vswhere -latest -prerelease -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe')
+          $vswhereExitCode = $LASTEXITCODE
+          if ($vswhereExitCode -ne 0) { throw "vswhere failed with exit code $vswhereExitCode." }
+          $msbuild = $vswhereOutput | Select-Object -First 1
           if (-not $msbuild) { throw 'MSBuild.exe not found via vswhere.' }
+          if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "MSBuild.exe selected by vswhere does not exist: $msbuild" }
           "msbuild_path=$msbuild" >> $env:GITHUB_OUTPUT
           Write-Host "Using MSBuild: $msbuild"
 
@@ -238,11 +286,13 @@ jobs:
           "Bundle architectures: $($architectures -join ', ')" | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Setup Store CLI
+        if: ${{ !inputs.package_only }}
         uses: microsoft/microsoft-store-apppublisher@v1.2
         with:
           version: v0.3.9
 
       - name: Reverify signed tag and remote tag before Store submission
+        if: ${{ !inputs.package_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -264,6 +314,7 @@ jobs:
           }
 
       - name: Configure Store CLI and check for an existing submission
+        if: ${{ !inputs.package_only }}
         shell: pwsh
         env:
           STORE_PRODUCT_ID_NORMALIZED: ${{ steps.prereq.outputs.store_product_id }}
@@ -278,6 +329,7 @@ jobs:
           & .\packaging\verify-store-submission-slot.ps1 -ProductId $env:STORE_PRODUCT_ID_NORMALIZED
 
       - name: MSStore Create Draft Submission
+        if: ${{ !inputs.package_only }}
         shell: pwsh
         env:
           PACKAGE_SHA256: ${{ steps.store_package.outputs.package_sha256 }}
@@ -294,6 +346,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "msstore publish failed with exit code $LASTEXITCODE." }
 
       - name: Reverify signed tag before Store submission commit
+        if: ${{ !inputs.package_only }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -315,6 +368,7 @@ jobs:
           }
 
       - name: MSStore Commit Submission
+        if: ${{ !inputs.package_only }}
         shell: pwsh
         env:
           STORE_PRODUCT_ID_NORMALIZED: ${{ steps.prereq.outputs.store_product_id }}
