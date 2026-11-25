@@ -44,7 +44,6 @@ public partial class MainWindow : Window
     private sealed record WindowChoice(Guid SlotId);
     private readonly WindowSlotRules _slotRules = new();
     private readonly HashSet<ThumbnailSlot> _pinsNeedingChoice = [];
-    private readonly HashSet<IntPtr> _destroyedBoundWindows = [];
     private sealed record SpecificWindowRow(Guid RuleId, Guid? SlotId, string Label);
     private WindowStyle _savedWindowStyle;
     private WindowState _savedWindowState;
@@ -95,7 +94,7 @@ public partial class MainWindow : Window
     private int _lastGridRows = -1;
     private int _lastGridCols = -1;
     private long _lastThumbnailUpdateTicks;
-    private readonly HashSet<IntPtr> _thumbnailRefreshPendingWindows = [];
+    private readonly Dictionary<IntPtr, ThumbnailBinding> _thumbnailRefreshPendingWindows = [];
     private readonly Dictionary<IntPtr, long> _lastThumbnailRefreshTicks = [];
 
     public MainWindow()
@@ -1446,8 +1445,7 @@ public partial class MainWindow : Window
         for (int i = _slots.Count - 1; i >= 0; i--)
         {
             ThumbnailSlot slot = _slots[i];
-            if (!slot.IsOccupied ||
-                (!_destroyedBoundWindows.Contains(slot.SourceHwnd) && slot.IsSourceWindowValid()))
+            if (!slot.IsOccupied || slot.IsSourceWindowValid(_taskbarWindowOrder))
                 continue;
 
             IntPtr sourceHwnd = slot.SourceHwnd;
@@ -1463,7 +1461,6 @@ public partial class MainWindow : Window
                 RemoveSlot(i);
             changed = true;
         }
-        _destroyedBoundWindows.Clear();
 
         if (changed)
         {
@@ -1493,11 +1490,12 @@ public partial class MainWindow : Window
 
     private bool AssignSlot(int idx, WindowInfo info, SlotState intent)
     {
-        if (!IsCurrentWindow(info))
+        if (info.ObservedLifetime is not long lifetime || !IsCurrentWindow(info))
             return false;
 
         IntPtr previousSource = _slots[idx].SourceHwnd;
-        if (!_slots[idx].Assign(info.Handle, info.Title, info.ProcessName, info.Identity!, intent))
+        var binding = new ThumbnailBinding(info.Handle, lifetime);
+        if (!_slots[idx].Assign(binding, info.Title, info.ProcessName, info.Identity!, intent))
             return false;
 
         if (previousSource != IntPtr.Zero && previousSource != info.Handle)
@@ -1546,7 +1544,8 @@ public partial class MainWindow : Window
     {
         for (int i = 0; i < _slots.Count; i++)
         {
-            if (_slots[i].IsOccupied && _slots[i].SourceHwnd == sourceHwnd)
+            if (_slots[i].Binding is ThumbnailBinding binding && binding.Handle == sourceHwnd &&
+                binding.IsObservedCurrent(_taskbarWindowOrder))
                 return i;
         }
 
@@ -1560,7 +1559,9 @@ public partial class MainWindow : Window
         if (sourceHwnd == IntPtr.Zero)
             return;
 
-        if (FindSlotIndexBySourceHwnd(sourceHwnd) < 0)
+        int index = FindSlotIndexBySourceHwnd(sourceHwnd);
+        if (index < 0 || _slots[index].Binding is not ThumbnailBinding binding ||
+            !binding.IsObservedCurrent(_taskbarWindowOrder))
             return;
 
         if (!bypassCooldown &&
@@ -1572,8 +1573,10 @@ public partial class MainWindow : Window
                 return;
         }
 
-        if (!_thumbnailRefreshPendingWindows.Add(sourceHwnd))
+        if (_thumbnailRefreshPendingWindows.TryGetValue(sourceHwnd, out ThumbnailBinding pending) &&
+            pending == binding)
             return;
+        _thumbnailRefreshPendingWindows[sourceHwnd] = binding;
 
         _thumbnailRefreshTimer.Stop();
         _thumbnailRefreshTimer.Start();
@@ -1585,19 +1588,19 @@ public partial class MainWindow : Window
         if (_thumbnailRefreshPendingWindows.Count == 0)
             return;
 
-        IntPtr[] pendingWindows = _thumbnailRefreshPendingWindows.ToArray();
+        ThumbnailBinding[] pendingWindows = _thumbnailRefreshPendingWindows.Values.ToArray();
         _thumbnailRefreshPendingWindows.Clear();
 
         bool refreshedAny = false;
         long refreshTicks = Stopwatch.GetTimestamp();
-        foreach (IntPtr sourceHwnd in pendingWindows)
+        foreach (ThumbnailBinding pending in pendingWindows)
         {
-            int idx = FindSlotIndexBySourceHwnd(sourceHwnd);
-            if (idx < 0)
+            int idx = FindSlotIndexBySourceHwnd(pending.Handle);
+            if (idx < 0 || _slots[idx].Binding != pending || !pending.IsObservedCurrent(_taskbarWindowOrder))
                 continue;
 
-            _lastThumbnailRefreshTicks[sourceHwnd] = refreshTicks;
-            if (_slots[idx].RefreshRegistration())
+            _lastThumbnailRefreshTicks[pending.Handle] = refreshTicks;
+            if (_slots[idx].RefreshRegistration(pending, _taskbarWindowOrder))
                 refreshedAny = true;
         }
 
@@ -1689,13 +1692,13 @@ public partial class MainWindow : Window
             return;
 
         ThumbnailSlot slot = _slots[idx];
-        if (!slot.IsOccupied || _destroyedBoundWindows.Contains(slot.SourceHwnd) || !slot.IsSourceWindowValid())
+        if (!slot.IsSourceWindowValid(_taskbarWindowOrder))
             return;
 
         IntPtr hwnd = slot.SourceHwnd;
         if (NativeMethods.IsIconic(hwnd))
             NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-        if (slot.IsSourceWindowValid())
+        if (slot.SourceHwnd == hwnd && slot.IsSourceWindowValid(_taskbarWindowOrder))
             NativeMethods.SetForegroundWindow(hwnd);
     }
 
@@ -1942,9 +1945,7 @@ public partial class MainWindow : Window
             }
             else if (shellEvent == NativeMethods.HSHELL_WINDOWDESTROYED)
             {
-                _taskbarWindowOrder.ObserveDestroyed(targetHwnd);
-                if (FindSlotIndexBySourceHwnd(targetHwnd) >= 0)
-                    _destroyedBoundWindows.Add(targetHwnd);
+                OnWindowDestroyed(targetHwnd);
             }
             else if (shellEvent == NativeMethods.HSHELL_FLASH)
             {
@@ -1962,23 +1963,33 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
+    private void OnWindowDestroyed(IntPtr hwnd)
+    {
+        int index = FindSlotIndexBySourceHwnd(hwnd);
+        _taskbarWindowOrder.ObserveDestroyed(hwnd);
+        _thumbnailRefreshPendingWindows.Remove(hwnd);
+        _lastThumbnailRefreshTicks.Remove(hwnd);
+
+        if (index < 0)
+            return;
+
+        _slots[index].ReleaseRegistration();
+        Dispatcher.BeginInvoke(DispatcherPriority.Normal, ValidateSlots);
+    }
+
     private void OnWindowFlash(IntPtr hwnd)
     {
-        for (int i = 0; i < _slots.Count; i++)
-        {
-            if (!_slots[i].IsOccupied || _slots[i].SourceHwnd != hwnd)
-                continue;
-
-            if (_flashingWindows.Add(hwnd))
-                UpdateSlotAttentionVisual(i);
-
-            return;
-        }
+        int index = FindSlotIndexBySourceHwnd(hwnd);
+        if (index >= 0 && _flashingWindows.Add(hwnd))
+            UpdateSlotAttentionVisual(index);
     }
 
     private void OnWindowActivated(IntPtr hwnd)
     {
         SetActiveSourceWindow(hwnd);
+        if (FindSlotIndexBySourceHwnd(hwnd) < 0)
+            return;
+
         ClearNotificationAttentionGroupsForWindow(hwnd);
         if (_flashingWindows.Remove(hwnd))
         {

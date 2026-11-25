@@ -4,6 +4,8 @@ namespace WindowThumbWall;
 
 public partial class MainWindow
 {
+    private SettingsWindow? _notificationSettingsWindow;
+
     private void ApplyLocalization()
     {
         Title = LocalizedText.Get("app.title");
@@ -49,14 +51,23 @@ public partial class MainWindow
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        NotificationAvailability availability = _notificationAttentionRequested && !SupportsNotificationAttentionRuntime()
+            ? NotificationAvailability.RequiresPackage
+            : _notificationAvailability;
         var settingsWindow = new SettingsWindow(
             _notificationAttentionRequested,
-            SupportsNotificationAttentionRuntime(),
+            LocalizedText.Get($"setting.osNotifications.status.{availability}"),
             enabled => SetNotificationAttentionEnabled(enabled))
         {
             Owner = this
         };
 
+        _notificationSettingsWindow = settingsWindow;
+        settingsWindow.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_notificationSettingsWindow, settingsWindow))
+                _notificationSettingsWindow = null;
+        };
         settingsWindow.ShowDialog();
     }
 }

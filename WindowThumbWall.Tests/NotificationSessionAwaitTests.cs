@@ -150,6 +150,101 @@ public sealed class NotificationSessionAwaitTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => currentOperation);
     }
 
+    [Fact]
+    public async Task BaselineThenSubscribeThenReconcile_PreservesInterveningNotifications()
+    {
+        var lifecycle = new NotificationSessionLifecycle<FakeSession>();
+        bool enabled = true;
+        FakeSession session = lifecycle.Ensure(static () => new FakeSession());
+        TaskCompletionSource<int[]> pendingCurrentSnapshot = NewPending<int[]>();
+        List<string> order = [];
+        List<int> knownBaselineIds = [];
+        List<int> newNotificationIds = [];
+
+        Task<bool> baseline = lifecycle.BaselineSubscribeReconcileIfCurrentAsync(
+            session,
+            current => lifecycle.IsCurrent(current, _ => enabled),
+            () =>
+            {
+                order.Add("initial-snapshot");
+                return Task.FromResult(new[] { 10 });
+            },
+            initialIds =>
+            {
+                knownBaselineIds.AddRange(initialIds);
+                order.Add("record-baseline");
+            },
+            () =>
+            {
+                order.Add("subscribe");
+                session.Subscribe();
+            },
+            session.Unsubscribe,
+            () =>
+            {
+                Assert.True(session.IsSubscribed);
+                order.Add("current-snapshot");
+                return pendingCurrentSnapshot.Task;
+            },
+            currentIds =>
+            {
+                order.Add("reconcile-current");
+                newNotificationIds.AddRange(currentIds.Except(knownBaselineIds));
+            });
+
+        Assert.Equal(["initial-snapshot", "record-baseline", "subscribe", "current-snapshot"], order);
+        Assert.Empty(newNotificationIds);
+        pendingCurrentSnapshot.SetResult([10, 20]);
+
+        Assert.True(await baseline);
+        Assert.Equal(["initial-snapshot", "record-baseline", "subscribe", "current-snapshot", "reconcile-current"], order);
+        Assert.Equal([10], knownBaselineIds);
+        Assert.Equal([20], newNotificationIds);
+        Assert.Equal(1, session.SubscribeCount);
+    }
+
+    [Fact]
+    public async Task SyncResultCompletedAfterAccessRevocation_IsNotApplied()
+    {
+        var lifecycle = new NotificationSessionLifecycle<FakeSession>();
+        bool enabled = true;
+        bool accessAllowed = true;
+        FakeSession session = lifecycle.Ensure(static () => new FakeSession());
+        TaskCompletionSource<int> pendingSync = NewPending<int>();
+
+        Task<bool> sync = lifecycle.AwaitAndApplyIfCurrentAsync(
+            session,
+            pendingSync.Task,
+            current => lifecycle.IsCurrent(current, _ => enabled && accessAllowed),
+            result => session.AppliedResultCount += result);
+
+        accessAllowed = false;
+        pendingSync.SetResult(5);
+
+        Assert.False(await sync);
+        Assert.Equal(0, session.AppliedResultCount);
+    }
+
+    [Fact]
+    public async Task BaselineFailureFromCurrentSession_PropagatesForAvailabilityReporting()
+    {
+        var lifecycle = new NotificationSessionLifecycle<FakeSession>();
+        FakeSession session = lifecycle.Ensure(static () => new FakeSession());
+
+        Task<bool> baseline = lifecycle.BaselineSubscribeReconcileIfCurrentAsync(
+            session,
+            current => lifecycle.IsCurrent(current, static _ => true),
+            () => Task.FromResult(1),
+            _ => { },
+            session.Subscribe,
+            session.Unsubscribe,
+            () => Task.FromException<int>(new InvalidOperationException("snapshot unavailable")),
+            result => session.AppliedResultCount += result);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => baseline);
+        Assert.Equal(0, session.AppliedResultCount);
+    }
+
     private static TaskCompletionSource<T> NewPending<T>() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

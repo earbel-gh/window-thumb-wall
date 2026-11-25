@@ -55,6 +55,57 @@ public sealed class NotificationWindowMatcherTests
     }
 
     [Fact]
+    public void Resolve_DoesNotUseWeakHintAgainstConflictingKnownAumid()
+    {
+        NotificationSignal signal = new(
+            AppUserModelId: "VendorA.Editor",
+            AppDisplayName: "VendorB",
+            NotificationTexts: ["Attention required"]);
+
+        NotificationMatchResult result = NotificationWindowMatcher.Resolve(signal,
+        [
+            NewWindow((IntPtr)1, "VendorB", "VendorB", @"C:\Apps\VendorB.exe", "VendorB.Editor")
+        ]);
+
+        Assert.Equal(NotificationMatchKind.None, result.Kind);
+        Assert.Empty(result.CandidateHandles);
+    }
+
+    [Fact]
+    public void Resolve_UsesWeakHintWhenCandidateAumidIsUnknown()
+    {
+        NotificationSignal signal = new(
+            AppUserModelId: "VendorA.Editor",
+            AppDisplayName: "VendorB",
+            NotificationTexts: ["Attention required"]);
+
+        NotificationMatchResult result = NotificationWindowMatcher.Resolve(signal,
+        [
+            NewWindow((IntPtr)1, "VendorB", "VendorB", @"C:\Apps\VendorB.exe", string.Empty)
+        ]);
+
+        Assert.Equal(NotificationMatchKind.Unique, result.Kind);
+        Assert.Equal([(IntPtr)1], result.CandidateHandles);
+    }
+
+    [Fact]
+    public void Resolve_UsesWeakHintWhenSourceAumidIsUnknown()
+    {
+        NotificationSignal signal = new(
+            AppUserModelId: string.Empty,
+            AppDisplayName: "VendorB",
+            NotificationTexts: ["Attention required"]);
+
+        NotificationMatchResult result = NotificationWindowMatcher.Resolve(signal,
+        [
+            NewWindow((IntPtr)1, "VendorB", "VendorB", @"C:\Apps\VendorB.exe", "VendorB.Editor")
+        ]);
+
+        Assert.Equal(NotificationMatchKind.Unique, result.Kind);
+        Assert.Equal([(IntPtr)1], result.CandidateHandles);
+    }
+
+    [Fact]
     public void Resolve_UsesTitleTokensOnlyWithinSameAppCandidates()
     {
         NotificationSignal signal = new(

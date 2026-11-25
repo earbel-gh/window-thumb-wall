@@ -19,6 +19,21 @@ internal enum AttentionVisualState
     Orange
 }
 
+internal enum NotificationAvailability
+{
+    Disabled,
+    RequiresPackage,
+    CheckingAccess,
+    AccessRequired,
+    AccessDenied,
+    Listening,
+    Unavailable,
+    AccessFailed,
+    SubscriptionFailed,
+    ReadFailed,
+    SyncFailed
+}
+
 internal sealed record NotificationAttentionGroup(
     uint NotificationId,
     AttentionVisualState VisualState,
@@ -94,6 +109,39 @@ internal sealed class NotificationSessionLifecycle<TSession> where TSession : cl
         return false;
     }
 
+    internal async Task<bool> BaselineSubscribeReconcileIfCurrentAsync<TSnapshot>(
+        TSession session,
+        Func<TSession, bool> isCurrent,
+        Func<Task<TSnapshot>> readInitialSnapshot,
+        Action<TSnapshot> recordBaseline,
+        Action subscribe,
+        Action unsubscribe,
+        Func<Task<TSnapshot>> readCurrentSnapshot,
+        Action<TSnapshot> reconcile)
+    {
+        if (!isCurrent(session))
+            return false;
+
+        if (!await AwaitAndApplyIfCurrentAsync(
+                session,
+                readInitialSnapshot(),
+                isCurrent,
+                recordBaseline).ConfigureAwait(true))
+            return false;
+
+        if (!SubscribeIfCurrent(session, isCurrent, subscribe, unsubscribe))
+            return false;
+
+        if (!isCurrent(session))
+        {
+            unsubscribe();
+            return false;
+        }
+
+        return await AwaitAndApplyIfCurrentAsync(session, readCurrentSnapshot(), isCurrent, reconcile)
+            .ConfigureAwait(true);
+    }
+
     internal async Task<bool> AwaitAndApplyIfCurrentAsync<TResult>(
         TSession session,
         Task<TResult> operation,
@@ -128,6 +176,7 @@ public partial class MainWindow
     private const int NotificationDiagnosticsMaxCharacters = 160;
     private const long NotificationDiagnosticsMaxBytes = 256 * 1024;
     private const int NotificationFollowUpSyncCount = 5;
+    private static readonly TimeSpan NotificationAccessMonitorInterval = TimeSpan.FromSeconds(30);
     private static string NotificationDiagnosticsPath => Path.Combine(
         Path.GetDirectoryName(Path.GetFullPath(AppState.GetStatePath()))!,
         "logs",
@@ -139,8 +188,10 @@ public partial class MainWindow
     private readonly HashSet<IntPtr> _notificationResolvedWindows = [];
     private readonly HashSet<IntPtr> _notificationAmbiguousWindows = [];
     private readonly DispatcherTimer _notificationFollowUpTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer _notificationAccessMonitorTimer = new() { Interval = NotificationAccessMonitorInterval };
 
     private readonly NotificationSessionLifecycle<NotificationSession> _notificationSessionLifecycle = new();
+    private NotificationAvailability _notificationAvailability = NotificationAvailability.Disabled;
 
     private sealed class NotificationSession
     {
@@ -150,32 +201,28 @@ public partial class MainWindow
         internal bool Subscribed { get; set; }
         internal bool SyncInProgress { get; set; }
         internal bool SyncQueued { get; set; }
+        internal bool BaselinePending { get; set; }
         internal int FollowUpRemainingTicks { get; set; }
     }
 
     private bool SupportsNotificationAttentionRuntime() => NativeMethods.HasCurrentPackageIdentity();
 
-    private void InitializeNotificationFollowUpTimer() =>
+    private void InitializeNotificationFollowUpTimer()
+    {
         _notificationFollowUpTimer.Tick += NotificationFollowUpTimer_Tick;
+        _notificationAccessMonitorTimer.Tick += NotificationAccessMonitorTimer_Tick;
+    }
 
     private void SetNotificationAttentionEnabled(bool enabled)
     {
         _notificationAttentionRequested = enabled;
-
-        if (enabled && !SupportsNotificationAttentionRuntime())
-        {
-            MessageBox.Show(
-                this,
-                LocalizedText.Get("setting.osNotifications.requiresPackage.message"),
-                LocalizedText.Get("setting.osNotifications.requiresPackage.title"),
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            enabled = false;
-        }
-
         bool runtimeEnabled = enabled && SupportsNotificationAttentionRuntime();
         if (_notificationAttentionEnabled == runtimeEnabled)
         {
+            if (enabled && !runtimeEnabled)
+                SetNotificationAvailability(NotificationAvailability.RequiresPackage, "Notification listener requires packaged app identity for this run.");
+            else if (!enabled)
+                SetNotificationAvailability(NotificationAvailability.Disabled, "OS notification attention disabled by preference.");
             RequestStateSave();
             return;
         }
@@ -185,6 +232,7 @@ public partial class MainWindow
         {
             NotificationSession session = EnsureNotificationSession();
             AppendNotificationDiagnostic("OS notification attention enabled.");
+            SetNotificationAvailability(NotificationAvailability.CheckingAccess, "Notification listener access check started.");
             if (IsLoaded)
                 InitializeNotificationListenerAsync(session);
         }
@@ -192,6 +240,8 @@ public partial class MainWindow
         {
             ResetNotificationAttentionState();
             AppendNotificationDiagnostic("OS notification attention disabled.");
+            SetNotificationAvailability(enabled ? NotificationAvailability.RequiresPackage : NotificationAvailability.Disabled,
+                enabled ? "Notification listener requires packaged app identity for this run." : "OS notification attention disabled by preference.");
         }
 
         RequestStateSave();
@@ -227,27 +277,34 @@ public partial class MainWindow
             return;
 
         session.Initialized = true;
+        SetNotificationAvailability(NotificationAvailability.CheckingAccess, "Notification listener initialization started.");
 
         if (!ApiInformation.IsTypePresent("Windows.UI.Notifications.Management.UserNotificationListener"))
         {
-            AppendNotificationDiagnostic("Notification listener type is not present on this system.");
+            SetNotificationAvailability(NotificationAvailability.Unavailable, "Notification listener type is not present on this system.");
             return;
         }
 
         if (!SupportsNotificationAttentionRuntime())
         {
-            AppendNotificationDiagnostic("Notification listener requires packaged app identity for this run.");
+            SetNotificationAvailability(NotificationAvailability.RequiresPackage, "Notification listener requires packaged app identity for this run.");
             return;
         }
 
+        NotificationAvailability failureAvailability = NotificationAvailability.AccessFailed;
+        string failingOperation = "notification listener access check";
         try
         {
             UserNotificationListener listener = UserNotificationListener.Current;
             session.Listener = listener;
+            failingOperation = "notification listener access check";
             UserNotificationListenerAccessStatus accessStatus = listener.GetAccessStatus();
             AppendNotificationDiagnostic($"Notification listener access status before request: {accessStatus}");
             if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
             {
+                SetNotificationAvailability(NotificationAvailability.AccessRequired, $"Notification listener access is {accessStatus}; requesting access.");
+                failingOperation = "notification access request";
+                failureAvailability = NotificationAvailability.AccessFailed;
                 bool accessIsCurrent = await _notificationSessionLifecycle.AwaitAndApplyIfCurrentAsync(
                     session,
                     listener.RequestAccessAsync().AsTask(),
@@ -262,83 +319,195 @@ public partial class MainWindow
 
             if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
             {
-                AppendNotificationDiagnostic($"Notification listener access denied: {accessStatus}");
+                SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access denied: {accessStatus}");
                 return;
             }
 
-            bool baselineIsCurrent = await _notificationSessionLifecycle.AwaitAndApplyIfCurrentAsync(
+            session.BaselinePending = true;
+            failingOperation = "notification listener access check";
+            failureAvailability = NotificationAvailability.AccessFailed;
+            accessStatus = listener.GetAccessStatus();
+            if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
+            {
+                session.BaselinePending = false;
+                SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access was revoked before baseline: {accessStatus}");
+                UnsubscribeNotificationSession(session);
+                return;
+            }
+            bool baselineIsCurrent = await _notificationSessionLifecycle.BaselineSubscribeReconcileIfCurrentAsync(
                 session,
-                listener.GetNotificationsAsync(NotificationKinds.Toast).AsTask(),
-                currentSession => IsCurrentNotificationSession(currentSession),
-                currentNotifications =>
+                currentSession =>
                 {
-                    _notificationObservations.Clear();
-                    _dismissedNotificationIds.Clear();
-                    foreach (UserNotification notification in currentNotifications)
-                    {
-                        NotificationSignal signal = BuildNotificationSignal(notification, out _);
-                        _notificationObservations[notification.Id] = CreateNotificationObservation(notification, signal, isBaseline: true);
-                    }
-
-                    _notificationAttentionGroups.Clear();
-                    if (currentNotifications.Count > 0)
-                    {
-                        List<NotificationWindowCandidate> candidates = CaptureMonitoredNotificationWindowCandidates();
-                        AppendNotificationSnapshot("initialize-baseline", currentNotifications, candidates);
-                        AppendNotificationDiagnostic(
-                            $"Notification initialization recorded {currentNotifications.Count} existing toast notification(s) without creating attention groups.");
-                    }
-                    else
-                    {
-                        AppendNotificationDiagnostic("Notification initialization completed with zero current toast notifications.");
-                    }
-
-                    RebuildNotificationAttentionIndex();
-                });
-            if (!baselineIsCurrent || !IsCurrentNotificationSession(session))
-                return;
-
-            if (!IsCurrentNotificationSession(session))
-                return;
-            _notificationSessionLifecycle.SubscribeIfCurrent(
-                session,
-                currentSession => IsCurrentNotificationSession(currentSession),
+                    failingOperation = "notification listener access check";
+                    failureAvailability = NotificationAvailability.AccessFailed;
+                    return IsCurrentNotificationSession(currentSession) &&
+                        (accessStatus = listener.GetAccessStatus()) == UserNotificationListenerAccessStatus.Allowed;
+                },
                 () =>
                 {
+                    failingOperation = "initial notification snapshot";
+                    failureAvailability = NotificationAvailability.ReadFailed;
+                    return listener.GetNotificationsAsync(NotificationKinds.Toast).AsTask();
+                },
+                currentNotifications =>
+                {
+                    failureAvailability = NotificationAvailability.SyncFailed;
+                    RecordNotificationBaseline(session, currentNotifications);
+                },
+                () =>
+                {
+                    failingOperation = "notification event subscription";
+                    failureAvailability = NotificationAvailability.SubscriptionFailed;
                     session.Handler = (_, _) => Dispatcher.BeginInvoke(() =>
                     {
-                        if (!IsCurrentNotificationSession(session))
+                        if (!IsCurrentNotificationSession(session) || !session.Subscribed)
                             return;
                         ScheduleNotificationFollowUpSync(session);
                         QueueNotificationAttentionSync(session);
                     });
-                    listener.NotificationChanged += session.Handler;
                     session.Subscribed = true;
+                    listener.NotificationChanged += session.Handler;
                 },
-                () => UnsubscribeNotificationSession(session));
+                () => UnsubscribeNotificationSession(session),
+                () =>
+                {
+                    failingOperation = "current notification reconciliation snapshot";
+                    failureAvailability = NotificationAvailability.ReadFailed;
+                    return listener.GetNotificationsAsync(NotificationKinds.Toast).AsTask();
+                },
+                currentNotifications =>
+                {
+                    failureAvailability = NotificationAvailability.SyncFailed;
+                    ReconcileNotificationSnapshot(currentNotifications, "initialize-reconcile");
+                });
+            if (!baselineIsCurrent || !IsCurrentNotificationSession(session))
+            {
+                if (IsCurrentNotificationSession(session) && accessStatus != UserNotificationListenerAccessStatus.Allowed)
+                {
+                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked during baseline: {accessStatus}");
+                    DisposeNotificationListener();
+                }
+                return;
+            }
+
+            session.BaselinePending = false;
+            SetNotificationAvailability(NotificationAvailability.Listening, "Notification listener baseline was recorded, subscription is active, and current snapshot was reconciled.");
+            if (!_notificationAccessMonitorTimer.IsEnabled)
+                _notificationAccessMonitorTimer.Start();
+            if (session.SyncQueued)
+                QueueNotificationAttentionSync(session);
         }
         catch (Exception ex)
         {
             if (IsCurrentNotificationSession(session))
-                AppendNotificationDiagnostic($"Notification listener initialization failed: {ex}");
+            {
+                session.BaselinePending = false;
+                UnsubscribeNotificationSession(session);
+                SetNotificationAvailability(failureAvailability, $"Notification listener {failingOperation} failed: {ex}");
+            }
         }
+    }
+
+    private void RecordNotificationBaseline(NotificationSession session, IReadOnlyList<UserNotification> notifications)
+    {
+        if (!IsCurrentNotificationSession(session))
+            return;
+
+        _notificationObservations.Clear();
+        _dismissedNotificationIds.Clear();
+        foreach (UserNotification notification in notifications)
+        {
+            NotificationSignal signal = BuildNotificationSignal(notification, out _);
+            _notificationObservations[notification.Id] = CreateNotificationObservation(notification, signal, isBaseline: true);
+        }
+
+        _notificationAttentionGroups.Clear();
+        if (notifications.Count > 0)
+        {
+            List<NotificationWindowCandidate> candidates = CaptureMonitoredNotificationWindowCandidates();
+            AppendNotificationSnapshot("initialize-baseline", notifications, candidates);
+            AppendNotificationDiagnostic(
+                $"Notification initialization recorded {notifications.Count} existing toast notification(s) without creating attention groups.");
+        }
+        else
+        {
+            AppendNotificationDiagnostic("Notification initialization completed with zero current toast notifications.");
+        }
+
+        RebuildNotificationAttentionIndex();
     }
 
     private void DisposeNotificationListener()
     {
+        NotificationSession? current = _notificationSessionLifecycle.Current;
+        if (current != null)
+        {
+            current.FollowUpRemainingTicks = 0;
+            current.SyncQueued = false;
+            current.BaselinePending = false;
+        }
         _notificationFollowUpTimer.Stop();
+        _notificationAccessMonitorTimer.Stop();
         _notificationSessionLifecycle.Invalidate(UnsubscribeNotificationSession);
     }
 
-    private static void UnsubscribeNotificationSession(NotificationSession session)
+    private void UnsubscribeNotificationSession(NotificationSession session)
     {
+        UserNotificationListener? listener = session.Listener;
+        TypedEventHandler<UserNotificationListener, UserNotificationChangedEventArgs>? handler = session.Handler;
+        bool shouldUnsubscribe = session.Subscribed && listener != null && handler != null;
+        session.Subscribed = false;
+        session.Handler = null;
+        session.Listener = null;
         session.FollowUpRemainingTicks = 0;
-        if (session.Subscribed && session.Listener != null && session.Handler != null)
+        session.SyncQueued = false;
+        session.BaselinePending = false;
+        try
         {
-            session.Listener.NotificationChanged -= session.Handler;
-            session.Subscribed = false;
-            session.Handler = null;
+            if (shouldUnsubscribe)
+                listener!.NotificationChanged -= handler!;
         }
+        catch (Exception ex)
+        {
+            try
+            {
+                AppendNotificationDiagnostic($"Notification listener unsubscribe failed during teardown: {ex}");
+            }
+            catch (Exception)
+            {
+            }
+        }
+        finally
+        {
+            session.SyncInProgress = false;
+        }
+    }
+
+    private void NotificationAccessMonitorTimer_Tick(object? sender, EventArgs e)
+    {
+        NotificationSession? session = _notificationSessionLifecycle.Current;
+        if (session == null || !IsCurrentNotificationSession(session) || !session.Subscribed || session.Listener == null)
+        {
+            _notificationAccessMonitorTimer.Stop();
+            return;
+        }
+
+        UserNotificationListenerAccessStatus accessStatus;
+        try
+        {
+            accessStatus = session.Listener.GetAccessStatus();
+        }
+        catch (Exception ex)
+        {
+            SetNotificationAvailability(NotificationAvailability.AccessFailed, $"Notification listener access monitor failed: {ex}");
+            return;
+        }
+
+        if (accessStatus == UserNotificationListenerAccessStatus.Allowed)
+            return;
+
+        SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked or unavailable: {accessStatus}");
+        ResetNotificationAttentionState();
     }
 
     private void NotificationFollowUpTimer_Tick(object? sender, EventArgs e)
@@ -374,6 +543,12 @@ public partial class MainWindow
             return;
         UserNotificationListener listener = session.Listener;
 
+        if (session.BaselinePending)
+        {
+            session.SyncQueued = true;
+            return;
+        }
+
         if (session.SyncInProgress)
         {
             session.SyncQueued = true;
@@ -381,6 +556,7 @@ public partial class MainWindow
         }
 
         session.SyncInProgress = true;
+        NotificationAvailability failureAvailability = NotificationAvailability.AccessFailed;
         try
         {
             do
@@ -389,96 +565,69 @@ public partial class MainWindow
                     return;
                 session.SyncQueued = false;
 
+                failureAvailability = NotificationAvailability.AccessFailed;
+                UserNotificationListenerAccessStatus accessStatus = listener.GetAccessStatus();
+                if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
+                {
+                    if (IsCurrentNotificationSession(session))
+                    {
+                        SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked or unavailable during sync: {accessStatus}");
+                        ResetNotificationAttentionState();
+                    }
+                    return;
+                }
+
                 IReadOnlyList<UserNotification>? notifications = null;
+                failureAvailability = NotificationAvailability.ReadFailed;
+                accessStatus = UserNotificationListenerAccessStatus.Allowed;
                 bool syncIsCurrent = await _notificationSessionLifecycle.AwaitAndApplyIfCurrentAsync(
                     session,
                     listener.GetNotificationsAsync(NotificationKinds.Toast).AsTask(),
-                    currentSession => IsCurrentNotificationSession(currentSession),
+                    currentSession => IsCurrentNotificationSession(currentSession) &&
+                        (accessStatus = listener.GetAccessStatus()) == UserNotificationListenerAccessStatus.Allowed,
                     result => notifications = result);
+                if (accessStatus != UserNotificationListenerAccessStatus.Allowed && IsCurrentNotificationSession(session))
+                {
+                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked during sync: {accessStatus}");
+                    ResetNotificationAttentionState();
+                    return;
+                }
                 if (!syncIsCurrent || notifications == null || !IsCurrentNotificationSession(session))
                     return;
-                HashSet<uint> currentIds = notifications.Select(static notification => notification.Id).ToHashSet();
-                uint[] removedIds = _notificationObservations.Keys
-                    .Where(id => !currentIds.Contains(id))
-                    .ToArray();
-                foreach (uint removedId in removedIds)
-                {
-                    _notificationAttentionGroups.Remove(removedId);
-                    _notificationObservations.Remove(removedId);
-                    _dismissedNotificationIds.Remove(removedId);
-                }
-
-                List<(UserNotification Notification, NotificationSignal Signal)> changedNotifications = [];
-                foreach (UserNotification notification in notifications)
-                {
-                    NotificationSignal signal = BuildNotificationSignal(notification, out _);
-                    NotificationObservation currentObservation;
-                    if (_notificationObservations.TryGetValue(notification.Id, out NotificationObservation? knownObservation))
-                    {
-                        currentObservation = CreateNotificationObservation(
-                            notification,
-                            signal,
-                            isBaseline: knownObservation.IsBaseline);
-
-                        if (knownObservation.CreationTime != currentObservation.CreationTime ||
-                            !string.Equals(knownObservation.Fingerprint, currentObservation.Fingerprint, StringComparison.Ordinal))
-                        {
-                            _dismissedNotificationIds.Remove(notification.Id);
-                        }
-                    }
-                    else
-                    {
-                        currentObservation = CreateNotificationObservation(notification, signal, isBaseline: false);
-                        _dismissedNotificationIds.Remove(notification.Id);
-                    }
-
-                    if (ShouldEvaluateNotification(notification.Id, currentObservation))
-                    {
-                        changedNotifications.Add((notification, signal));
-                        currentObservation = currentObservation with { IsBaseline = false };
-                    }
-
-                    _notificationObservations[notification.Id] = currentObservation;
-                }
-
-                if (changedNotifications.Count > 0)
-                {
-                    List<NotificationWindowCandidate> candidates = CaptureMonitoredNotificationWindowCandidates();
-                    AppendNotificationSnapshot(
-                        "sync-delta",
-                        changedNotifications.Select(static entry => entry.Notification).ToArray(),
-                        candidates);
-                    foreach ((UserNotification notification, NotificationSignal signal) in changedNotifications)
-                    {
-                        _notificationAttentionGroups.Remove(notification.Id);
-                        AddNotificationAttentionGroup(notification, signal, candidates);
-                    }
-                }
-
-                if (notifications.Count == 0)
-                {
-                    AppendNotificationDiagnostic("Notification sync completed with zero current toast notifications.");
-                }
-                else if (changedNotifications.Count == 0)
-                {
-                    AppendNotificationDiagnostic(
-                        $"Notification sync observed no new or updated toast notifications. current={notifications.Count} removed={removedIds.Length}");
-                }
-
-                if (removedIds.Length > 0)
-                {
-                    AppendNotificationDiagnostic(
-                        $"Notification sync removed attention groups for notification ids [{string.Join(", ", removedIds)}].");
-                }
-
-                RebuildNotificationAttentionIndex();
+                failureAvailability = NotificationAvailability.SyncFailed;
+                ReconcileNotificationSnapshot(notifications);
+                if (_notificationAvailability != NotificationAvailability.Listening)
+                    SetNotificationAvailability(NotificationAvailability.Listening, "Notification sync completed while listener access remains allowed.");
             }
             while (IsCurrentNotificationSession(session) && session.SyncQueued);
         }
         catch (Exception ex)
         {
             if (IsCurrentNotificationSession(session))
-                AppendNotificationDiagnostic($"Notification sync failed: {ex}");
+            {
+                bool accessCheckSucceeded = false;
+                bool accessIsAllowed = false;
+                try
+                {
+                    accessIsAllowed = listener.GetAccessStatus() == UserNotificationListenerAccessStatus.Allowed;
+                    accessCheckSucceeded = true;
+                }
+                catch (Exception)
+                {
+                }
+
+                if (accessCheckSucceeded && !accessIsAllowed)
+                {
+                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access lost during sync; {ex}");
+                    ResetNotificationAttentionState();
+                }
+                else
+                {
+                    SetNotificationAvailability(
+                        accessCheckSucceeded ? failureAvailability : NotificationAvailability.AccessFailed,
+                        $"Notification sync failed: {ex}");
+                }
+            }
         }
         finally
         {
@@ -487,10 +636,105 @@ public partial class MainWindow
         }
     }
 
+    private void ReconcileNotificationSnapshot(
+        IReadOnlyList<UserNotification> notifications,
+        string snapshotSource = "sync-delta")
+    {
+        HashSet<uint> currentIds = notifications.Select(static notification => notification.Id).ToHashSet();
+        uint[] removedIds = _notificationObservations.Keys
+            .Where(id => !currentIds.Contains(id))
+            .ToArray();
+        foreach (uint removedId in removedIds)
+        {
+            _notificationAttentionGroups.Remove(removedId);
+            _notificationObservations.Remove(removedId);
+            _dismissedNotificationIds.Remove(removedId);
+        }
+
+        List<(UserNotification Notification, NotificationSignal Signal)> changedNotifications = [];
+        foreach (UserNotification notification in notifications)
+        {
+            NotificationSignal signal = BuildNotificationSignal(notification, out _);
+            NotificationObservation currentObservation;
+            if (_notificationObservations.TryGetValue(notification.Id, out NotificationObservation? knownObservation))
+            {
+                currentObservation = CreateNotificationObservation(
+                    notification,
+                    signal,
+                    isBaseline: knownObservation.IsBaseline);
+
+                if (knownObservation.CreationTime != currentObservation.CreationTime ||
+                    !string.Equals(knownObservation.Fingerprint, currentObservation.Fingerprint, StringComparison.Ordinal))
+                {
+                    _dismissedNotificationIds.Remove(notification.Id);
+                }
+            }
+            else
+            {
+                currentObservation = CreateNotificationObservation(notification, signal, isBaseline: false);
+                _dismissedNotificationIds.Remove(notification.Id);
+            }
+
+            if (ShouldEvaluateNotification(notification.Id, currentObservation))
+            {
+                changedNotifications.Add((notification, signal));
+                currentObservation = currentObservation with { IsBaseline = false };
+            }
+
+            _notificationObservations[notification.Id] = currentObservation;
+        }
+
+        if (changedNotifications.Count > 0)
+        {
+            List<NotificationWindowCandidate> candidates = CaptureMonitoredNotificationWindowCandidates();
+            AppendNotificationSnapshot(
+                snapshotSource,
+                changedNotifications.Select(static entry => entry.Notification).ToArray(),
+                candidates);
+            foreach ((UserNotification notification, NotificationSignal signal) in changedNotifications)
+            {
+                _notificationAttentionGroups.Remove(notification.Id);
+                AddNotificationAttentionGroup(notification, signal, candidates);
+            }
+        }
+
+        if (notifications.Count == 0)
+        {
+            AppendNotificationDiagnostic("Notification sync completed with zero current toast notifications.");
+        }
+        else if (changedNotifications.Count == 0)
+        {
+            AppendNotificationDiagnostic(
+                $"Notification sync observed no new or updated toast notifications. current={notifications.Count} removed={removedIds.Length}");
+        }
+
+        if (removedIds.Length > 0)
+        {
+            AppendNotificationDiagnostic(
+                $"Notification sync removed attention groups for notification ids [{string.Join(", ", removedIds)}].");
+        }
+
+        RebuildNotificationAttentionIndex();
+    }
+
+    private void SetNotificationAvailability(NotificationAvailability availability, string diagnostic)
+    {
+        _notificationAvailability = availability;
+        NotificationAvailability displayAvailability = _notificationAttentionRequested && !SupportsNotificationAttentionRuntime()
+            ? NotificationAvailability.RequiresPackage
+            : availability;
+        _notificationSettingsWindow?.UpdateNotificationAvailability(
+            LocalizedText.Get($"setting.osNotifications.status.{displayAvailability}"));
+        AppendNotificationDiagnostic(diagnostic);
+    }
+
     private List<NotificationWindowCandidate> CaptureMonitoredNotificationWindowCandidates()
     {
         List<NotificationWindowCandidate> candidates = [];
-        foreach (ThumbnailSlot slot in _slots.Where(static slot => slot.IsOccupied))
+        foreach (ThumbnailSlot slot in _slots.Where(slot =>
+                     slot.IsOccupied &&
+                     slot.Binding is ThumbnailBinding binding &&
+                     binding.IsObservedCurrent(_taskbarWindowOrder)))
         {
             candidates.Add(new NotificationWindowCandidate(
                 Handle: slot.SourceHwnd,

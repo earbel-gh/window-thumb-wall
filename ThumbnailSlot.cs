@@ -15,7 +15,8 @@ internal sealed class ThumbnailSlot
     private NativeMethods.RECT _lastDestination;
 
     internal Guid SlotId { get; }
-    internal IntPtr SourceHwnd { get; private set; }
+    internal ThumbnailBinding? Binding { get; private set; }
+    internal IntPtr SourceHwnd => Binding?.Handle ?? IntPtr.Zero;
     internal string SourceTitle { get; private set; } = string.Empty;
     internal string SourceProcessName { get; private set; } = string.Empty;
     internal WindowIdentity? Identity { get; private set; }
@@ -34,13 +35,13 @@ internal sealed class ThumbnailSlot
         _thumbnail = new DwmThumbnailRegistration(AcquireThumbnail, static handle => NativeMethods.DwmUnregisterThumbnail(handle));
     }
 
-    internal bool Assign(IntPtr sourceHwnd, string title, string processName, WindowIdentity identity, SlotState intent)
+    internal bool Assign(ThumbnailBinding binding, string title, string processName, WindowIdentity identity, SlotState intent)
     {
-        if (intent.SlotId != SlotId || !_thumbnail.TryReplace(sourceHwnd))
+        if (intent.SlotId != SlotId || !_thumbnail.TryReplace(binding.Handle))
             return false;
 
         ResetAppliedState();
-        SourceHwnd = sourceHwnd;
+        Binding = binding;
         SourceTitle = title;
         SourceProcessName = processName;
         Identity = identity;
@@ -59,9 +60,9 @@ internal sealed class ThumbnailSlot
         Intent = state;
     }
 
-    internal bool RefreshRegistration()
+    internal bool RefreshRegistration(ThumbnailBinding expected, TaskbarWindowOrder windows)
     {
-        if (!_thumbnail.TryReplace(SourceHwnd))
+        if (Binding != expected || !_thumbnail.TryRefresh(expected, windows, IsNativeSourceValid))
             return false;
 
         ResetAppliedState();
@@ -69,11 +70,16 @@ internal sealed class ThumbnailSlot
         return true;
     }
 
-    internal void Clear()
+    internal void ReleaseRegistration()
     {
         _thumbnail.Release();
-        ResetSourceInfo();
         ResetAppliedState();
+    }
+
+    internal void Clear()
+    {
+        ReleaseRegistration();
+        ResetSourceInfo();
     }
 
     private void ResetAppliedState()
@@ -165,9 +171,11 @@ internal sealed class ThumbnailSlot
         return true;
     }
 
-    internal bool IsSourceWindowValid() =>
-        SourceHwnd == IntPtr.Zero ||
-        (NativeMethods.IsWindow(SourceHwnd) && (Identity?.IsSameLiveProcessAndClass(SourceHwnd) ?? true));
+    internal bool IsSourceWindowValid(TaskbarWindowOrder windows) =>
+        Binding is ThumbnailBinding binding && binding.IsObservedCurrent(windows) && IsNativeSourceValid();
+
+    private bool IsNativeSourceValid() =>
+        NativeMethods.IsWindow(SourceHwnd) && Identity?.IsSameLiveProcessAndClass(SourceHwnd) == true;
 
     internal void UpdateSourceTitle(string title)
     {
@@ -190,7 +198,7 @@ internal sealed class ThumbnailSlot
 
     private void ResetSourceInfo()
     {
-        SourceHwnd = IntPtr.Zero;
+        Binding = null;
         SourceTitle = string.Empty;
         SourceProcessName = string.Empty;
         Identity = null;

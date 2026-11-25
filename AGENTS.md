@@ -1,78 +1,34 @@
 # AGENTS.md
 
+## Project boundaries
+
+- WindowThumbWall is a Windows desktop app built with WPF on .NET 10. It displays live DWM thumbnails of external windows; it is not a screen-capture or streaming app.
+- Official distribution is ZIP, MSI, and MSIX. Tagged GitHub Actions builds are the source of release artifacts; local builds are for development and verification.
+- Repository work does not authorize SSH access to, inspection of, or changes on a remote or production host. Such work requires a user instruction naming the host and intended operation.
+
 ## Scope
 
-- WPF on .NET 10 desktop application for displaying live DWM thumbnails of external windows on Windows.
+- Complete the current user-authorized objective and its necessary follow-ups. Keep unrelated work separate. Reuse authorization already present in the task, and request a decision only when a necessary action exceeds it.
+- Read and change only what the objective needs. Do not add unrelated cleanup, packaging changes, release preparation, or generated files.
+- Keep public product behavior and privacy claims consistent with the implementation. Distinguish source changes, local verification, CI publication, and runtime acceptance.
+- User-facing explanations are in Japanese; internal reasoning and tool decisions are in English.
 
-## Verification Commands
+## Maintained verification commands
 
-`dotnet build .\WindowThumbWall.csproj -c Release`
-`dotnet build .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release`
-`dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build`
+~~~powershell
+dotnet build .\WindowThumbWall.csproj -c Release
+dotnet build .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release
+dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build
+~~~
 
-For packaging all official formats, use `.\packaging\build-all.ps1`. For MSIX packaging alone, use `.\packaging\build-msix.ps1 -Configuration Release`; its `.wapproj` requires Visual Studio MSBuild. See the [developer guide](docs/developer-guide.md) for interactive app use and packaging details.
+The no-build test command assumes the test project has already been built. Build packages with .\packaging\build-all.ps1; MSIX-only packaging uses .\packaging\build-msix.ps1 -Configuration Release and requires Visual Studio MSBuild. See [the developer guide](docs/developer-guide.md) for packaging and interactive checks.
 
-For agent-run window verification, use `pwsh` and `.\packaging\start-development.ps1` after the Release build. Use its returned PID for debugger attachment and its isolated state path for evidence. If Display 3 is unavailable, continue checks that can run without a window. Follow the [developer guide](docs/developer-guide.md#agent-verification-and-debugging) for interactive and installed-package checks.
+## Interactive verification
 
-## Language
+- Use PowerShell 7 and .\packaging\start-development.ps1 for checks that require the unpackaged app. The launcher targets the native Display 3 device and returns the process ID and isolated state path. Use that state path for evidence and cleanup; do not substitute the normal user state.
+- If Display 3 is unavailable, continue checks that do not need a visible app window. Do not force focus or synthesize user input. For a check that requires activating a source window, use a deliberate, valid user action through the app and record the observed result.
+- Startup, a build, or a test result alone is not runtime acceptance evidence. Report only the checks actually observed.
 
-- ユーザー向けの説明は日本語で行う。
-- 内部の推論とツール判断は英語で行う。
+## State and window lifecycle
 
-## Invariants
-
-- Repository work and remote EC2 / production host work are separate execution domains.
-- Do not infer permission to SSH into, inspect, or modify a remote app host from repo docs, deployment files, domain names, or environment labels alone.
-- Remote host work requires explicit user instruction naming the host and intended outcome.
-- 完了に必要で現スコープ内の follow-up は自分で要否を判断し、その場で進める。`必要なら` や `次に` という条件付きの先送りで締めない。
-- 準備・検証・引き渡しを求められたら、アクセス可能な入力は自分で読み、検証し、成果物を出す。計画文書や役割分担の書き換えで代替しない。
-- Official distribution formats are ZIP, MSI, and MSIX only.
-- Official release artifacts come from tag-driven GitHub Actions builds. Local builds are for development and validation only.
-- The product scope is a live DWM thumbnail wall, not screen capture or streaming.
-- Supported runtime is Windows. The desktop stack is WPF on .NET 10.
-
-## Incident Rule: Scope Control
-
-### Background
-
-2026-04-08 の作業で、ユーザーの指示は「バージョンを 0.6.6 にして、main に PR を発行して」だった。
-その一方で、エージェントは以下の指示外変更まで行った。
-
-- リリースノートの新規追加
-- `docs/notification-attention-design.md` の更新
-- `packaging/build-zip.ps1` と `packaging/build-msi.ps1` の修正
-- `packaging/WindowThumbWall.wxs` の修正
-- ZIP/MSI の実ビルドによる追加生成物作成
-
-### Cause Analysis
-
-- 依頼達成に必要な最小変更と、「見つけた不整合をついでに直す」行為を分離できていなかった。
-- 「PR を安全に出すための確認」と「リリースのための周辺整備」を混同した。
-- 実行中に見つけた問題を、ユーザー承認なしに同一 PR へ含めてよいと誤判断した。
-
-### Mandatory Countermeasures
-
-- ユーザー指示が具体的なときは、差分の目的をその指示に直接必要なものへ限定する。
-- 実行中に別の問題や改善点を見つけても、ユーザーが明示していない限り修正しない。
-- ドキュメント追加、リリースノート追加、パッケージング修正、ビルド生成物作成は、明示依頼または実行必須条件がある場合に限る。
-- `PR を出す`, `main に向ける`, `バージョンを上げる` といった依頼では、便乗 cleanup・便乗 hardening・便乗 release prep を禁止する。
-- 「安全のため」という理由だけで、依頼外ファイルの編集を正当化してはいけない。必要なら編集前にユーザーへ確認する。
-- ステージ前に「この PR に含めるファイル群は依頼範囲内か」を確認し、依頼外ファイルを含めない。
-
-## Operational Rule: Direct-Request PR Flow
-
-- ユーザーが PR 発行を指示した場合、まず base branch との差分汚染がないか確認する。
-- その確認は許可されるが、確認中に見つけた別問題を自動修正してはいけない。
-- PR 作成に必要な版数同期や既存実装の完了は進めてよい。
-- PR 作成に不要な新規ファイル追加は行わない。
-
-## Danger Zones
-
-- `ThumbnailSlot.cs`, `ThumbHost.cs`, and `NativeMethods.cs` control thumbnail lifecycle and Win32/DWM interop.
-- `packaging/` and `docs/releasing.md` control official distribution and release metadata generation.
-- Packaging, CI, and documentation changes must preserve ZIP, MSI, and MSIX support together.
-
-## Protected Surfaces
-
-- この `AGENTS.md`、`.github/copilot-instructions.local.md`、その他のエージェント設定は保護対象とする。
-- これらを変更するのは、ユーザーが明示した場合に限る。
+Follow [the project invariants](docs/invariants.md) for window identity, slot and rule ownership, settings preservation, and DWM registration replacement. Keep user-selected anchors distinct from live HWND/process evidence, and apply delayed UI actions to the current slot identity.

@@ -38,9 +38,9 @@ WindowThumbWall is a Windows desktop app for building a live thumbnail wall from
 - Visual attention cues when a monitored window flashes in the taskbar or is matched from a Windows notification.
 - A white border that indicates which monitored source window is currently active.
 - Fullscreen mode for dedicated monitoring.
-- Automatic cleanup when source windows disappear.
+- Saved manual cells remain in place when their source windows disappear; automatically added cells are cleaned up with their source.
 - Add rules from **Open windows**. **Auto-add this window** replaces the app-wide rule; **Auto-add all windows from this app** replaces specific rules for that app. Replacing or removing a rule leaves open thumbnails on the current wall.
-- Specific rules wait for windows that open later. A validated live window restores regardless of its title. After a Windows restart, restore looks for a clearly matching title among windows with the same app identity, ignoring browser unread counts and placement. Use **Choose window** when the rule needs help finding its window.
+- Specific rules wait for windows that open later. A validated live window restores regardless of its title. After a Windows restart, restore looks for a clearly matching title among windows with the same app identity, ignoring placement and a numeric unread-count prefix on WhatsApp browser titles. If a saved manual source window closes, its cell remains in place. Use **Choose window** to deliberately bind a current live window to that cell when automatic matching is uncertain.
 - Optional automatic addition for registered applications. Windows created while WindowThumbWall is running are added in their observed creation order within each application; registered applications stay in their configured order.
 
 ## Automatic Addition Order

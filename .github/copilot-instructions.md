@@ -1,55 +1,28 @@
 # Copilot Instructions — WindowThumbWall
 
-## Project Truth
+## Project boundaries
 
-- Windows desktop app using WPF on .NET 10 and the native DWM thumbnail API.
-- 配布、CI、ドキュメントの変更でも ZIP、MSI、MSIX の 3 形式を維持する。
+- This is a Windows desktop app built with WPF on .NET 10. It displays live DWM thumbnails of external windows; it is not a screen-capture or streaming app.
+- Official distribution is ZIP, MSI, and MSIX. Tagged GitHub Actions builds produce release artifacts; local builds are for development and verification.
+- Repository work does not authorize SSH access to, inspection of, or changes on a remote or production host. Such work requires a user instruction naming the host and intended operation.
 
-## Key Rules
+## Scope and product invariants
 
-- この repo での作業は、remote EC2 app host や production host への SSH・調査・変更の許可を意味しない。
-- domain 名、デプロイ文書、Compose 設定、infra 文書から remote host 作業の許可を推定しない。
-- remote host 作業は、対象 host と意図された操作を明示したユーザー指示がある場合に限る。
-- 完了に必要で現スコープ内の follow-up は自分で要否を判断し、その場で進める。`必要なら` や `次に` という条件付きの先送りで締めない。
-- 準備・検証・引き渡しを求められたら、アクセス可能な入力は自分で読み、検証し、成果物を出す。計画文書や役割分担の書き換えで代替しない。
-- 公開配布する成果物は tag-driven GitHub Actions が生成した CI ビルドを正本とする。
-- ローカルビルドは開発と検証用であり、配布物の正本として扱わない。
-- プロダクトを screen capture や streaming アプリへ拡張する前提で変更しない。
-- release と packaging の変更では `docs/invariants.md`、`docs/releasing.md`、`docs/developer-guide.md` を正本として従う。
+- Complete the current user-authorized objective and its necessary follow-ups. Keep unrelated work separate. Reuse authorization already present in the task, and request a decision only when a necessary action exceeds it.
+- Keep changes limited to the objective. Do not add unrelated cleanup, packaging changes, release preparation, or generated files.
+- Follow [the project invariants](../docs/invariants.md), [the developer guide](../docs/developer-guide.md), and [the release process](../docs/releasing.md) for maintained behavior and release requirements.
+- User-facing explanations are in Japanese; internal reasoning and tool decisions are in English.
 
 ## Verification
 
-- 通常の CLI 確認では次の Release build/test コマンドを使う。ウィンドウが必要な検証は PowerShell 7 の `.\packaging\start-development.ps1` で行う。返された PID を既存のデバッガで使用し、検証データは返された隔離状態ファイルに限定する。Display 3 を確保できない場合も、ウィンドウを必要としない検証は続ける。
+Use these Release build and test commands for checks that do not need a window:
 
-  ```powershell
-  dotnet build .\WindowThumbWall.csproj -c Release
-  dotnet build .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release
-  dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build
-  ```
+~~~powershell
+dotnet build .\WindowThumbWall.csproj -c Release
+dotnet build .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release
+dotnet test .\WindowThumbWall.Tests\WindowThumbWall.Tests.csproj -c Release --no-build
+~~~
 
-- MSIX の build には Visual Studio MSBuild が必要な `.wapproj` が含まれるため、`.\packaging\build-msix.ps1 -Configuration Release` を使う。詳細は [開発者ガイド](../docs/developer-guide.md) を参照する。
-- packaging 変更では `.\packaging\build-all.ps1` か個別 build script で 3 形式を維持しているか確認する。
+The no-build test command assumes the test project has already been built. For interactive checks, use PowerShell 7 and .\packaging\start-development.ps1, which targets the native Display 3 device and returns an isolated state path. If Display 3 is unavailable, continue checks that do not need a visible window. Do not force focus or synthesize user input; use a deliberate valid user action for checks that require source-window activation, and report only the result actually observed.
 
-## Agent observability
-
-When investigating stalled, slow, expensive, repetitive, or suspicious agent sessions, inspect the local Copilot OpenTelemetry output before guessing.
-
-Primary local trace file: `C:\Users\tsuchim\copilot-otel\copilot-otel.jsonl`
-
-When available, also use the exported SQLite trace database from `Chat: Export Agent Traces DB`.
-
-Inspect:
-- the last `invoke_agent`, `chat`, `execute_tool`, or `execute_hook` span before a stall
-- long-running tool calls
-- failed tool calls
-- failed terminal commands
-- repeated or unnecessary tool calls
-- model names
-- token usage
-- cache read / cache creation token usage
-- subagent parent-child relationships
-- prompt / response / tool argument / tool result content when captured
-
-The current observability policy is content-first: capture useful local hints from information already handed to agents unless log volume becomes impractical.
-
-Do not silently disable content capture. If log volume becomes too large, report measured file size growth and propose a retention or truncation policy.
+For MSIX packaging, use .\packaging\build-msix.ps1 -Configuration Release; it requires Visual Studio MSBuild. To build all official formats, use .\packaging\build-all.ps1.
