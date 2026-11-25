@@ -66,6 +66,8 @@ development outputs keep their existing version, and the dispatch cannot reach
 either publication job. The signed-tag build repeats the gate with the actual
 release MSI.
 
+The standalone CI MSIX is packed directly by MakeAppx. Its manifest declares the English and Japanese resource languages explicitly. The Visual Studio package project resolves its own resource placeholder during MSBuild.
+
 ## Distribution Invariant
 The official distribution formats are fixed.
 

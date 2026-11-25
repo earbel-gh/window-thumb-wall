@@ -208,6 +208,10 @@ jobs:
             $plainVersion = $env:VERSION -replace '^v', ''
             $manifestPath = "publish-msix-$arch\AppxManifest.xml"
             [xml]$xml = Get-Content $manifestPath
+            $resourceLanguages = @($xml.Package.Resources.Resource | ForEach-Object { [string]$_.Language })
+            if ($resourceLanguages.Count -eq 0 -or $resourceLanguages -contains '' -or $resourceLanguages -contains 'x-generate') {
+              throw 'The standalone MSIX manifest requires concrete resource languages before MakeAppx runs.'
+            }
 
             if ($plainVersion -match '^\d+\.\d+\.\d+$') {
               $versionParts = $plainVersion.Split('.')
