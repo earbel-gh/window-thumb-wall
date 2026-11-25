@@ -34,6 +34,20 @@ internal enum NotificationAvailability
     SyncFailed
 }
 
+internal static class NotificationAccessStatusPolicy
+{
+    internal static bool ShouldRequestAccess(UserNotificationListenerAccessStatus status) =>
+        status == UserNotificationListenerAccessStatus.Unspecified;
+
+    internal static NotificationAvailability GetAvailability(UserNotificationListenerAccessStatus status) => status switch
+    {
+        UserNotificationListenerAccessStatus.Allowed => NotificationAvailability.Listening,
+        UserNotificationListenerAccessStatus.Unspecified => NotificationAvailability.AccessRequired,
+        UserNotificationListenerAccessStatus.Denied => NotificationAvailability.AccessDenied,
+        _ => NotificationAvailability.AccessFailed
+    };
+}
+
 internal sealed record NotificationAttentionGroup(
     uint NotificationId,
     AttentionVisualState VisualState,
@@ -300,7 +314,7 @@ public partial class MainWindow
             failingOperation = "notification listener access check";
             UserNotificationListenerAccessStatus accessStatus = listener.GetAccessStatus();
             AppendNotificationDiagnostic($"Notification listener access status before request: {accessStatus}");
-            if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
+            if (NotificationAccessStatusPolicy.ShouldRequestAccess(accessStatus))
             {
                 SetNotificationAvailability(NotificationAvailability.AccessRequired, $"Notification listener access is {accessStatus}; requesting access.");
                 failingOperation = "notification access request";
@@ -313,13 +327,22 @@ public partial class MainWindow
                 if (!accessIsCurrent)
                     return;
             }
+            else if (accessStatus == UserNotificationListenerAccessStatus.Denied)
+            {
+                SetNotificationAvailability(NotificationAvailability.AccessDenied, "Notification access was denied; grant it in Windows Settings.");
+                return;
+            }
 
             if (!IsCurrentNotificationSession(session))
                 return;
 
             if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
             {
-                SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access denied: {accessStatus}");
+                SetNotificationAvailability(
+                    NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+                    accessStatus == UserNotificationListenerAccessStatus.Denied
+                        ? "Notification access was denied; grant it in Windows Settings."
+                        : $"Notification listener access remains unresolved: {accessStatus}");
                 return;
             }
 
@@ -330,7 +353,9 @@ public partial class MainWindow
             if (accessStatus != UserNotificationListenerAccessStatus.Allowed)
             {
                 session.BaselinePending = false;
-                SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access was revoked before baseline: {accessStatus}");
+                SetNotificationAvailability(
+                    NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+                    $"Notification listener access was not allowed before baseline: {accessStatus}");
                 UnsubscribeNotificationSession(session);
                 return;
             }
@@ -384,7 +409,9 @@ public partial class MainWindow
             {
                 if (IsCurrentNotificationSession(session) && accessStatus != UserNotificationListenerAccessStatus.Allowed)
                 {
-                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked during baseline: {accessStatus}");
+                    SetNotificationAvailability(
+                        NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+                        $"Notification listener access was not allowed during baseline: {accessStatus}");
                     DisposeNotificationListener();
                 }
                 return;
@@ -499,14 +526,27 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            SetNotificationAvailability(NotificationAvailability.AccessFailed, $"Notification listener access monitor failed: {ex}");
+            string diagnostic = $"Notification listener access monitor failed: {ex}";
+            if (_notificationAvailability is NotificationAvailability.Listening or NotificationAvailability.AccessFailed)
+                SetNotificationAvailability(NotificationAvailability.AccessFailed, diagnostic);
+            else
+                AppendNotificationDiagnostic(diagnostic);
             return;
         }
 
         if (accessStatus == UserNotificationListenerAccessStatus.Allowed)
+        {
+            if (_notificationAvailability == NotificationAvailability.AccessFailed &&
+                IsCurrentNotificationSession(session) && session.Subscribed && session.Listener != null)
+            {
+                SetNotificationAvailability(NotificationAvailability.Listening, "Notification access check recovered; the existing listener subscription remains active.");
+            }
             return;
+        }
 
-        SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked or unavailable: {accessStatus}");
+        SetNotificationAvailability(
+            NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+            $"Notification listener access is no longer allowed: {accessStatus}");
         ResetNotificationAttentionState();
     }
 
@@ -571,7 +611,9 @@ public partial class MainWindow
                 {
                     if (IsCurrentNotificationSession(session))
                     {
-                        SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked or unavailable during sync: {accessStatus}");
+                        SetNotificationAvailability(
+                            NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+                            $"Notification listener access is no longer allowed during sync: {accessStatus}");
                         ResetNotificationAttentionState();
                     }
                     return;
@@ -588,7 +630,9 @@ public partial class MainWindow
                     result => notifications = result);
                 if (accessStatus != UserNotificationListenerAccessStatus.Allowed && IsCurrentNotificationSession(session))
                 {
-                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access revoked during sync: {accessStatus}");
+                    SetNotificationAvailability(
+                        NotificationAccessStatusPolicy.GetAvailability(accessStatus),
+                        $"Notification listener access is no longer allowed during sync: {accessStatus}");
                     ResetNotificationAttentionState();
                     return;
                 }
@@ -607,9 +651,11 @@ public partial class MainWindow
             {
                 bool accessCheckSucceeded = false;
                 bool accessIsAllowed = false;
+                UserNotificationListenerAccessStatus? observedAccessStatus = null;
                 try
                 {
-                    accessIsAllowed = listener.GetAccessStatus() == UserNotificationListenerAccessStatus.Allowed;
+                    observedAccessStatus = listener.GetAccessStatus();
+                    accessIsAllowed = observedAccessStatus == UserNotificationListenerAccessStatus.Allowed;
                     accessCheckSucceeded = true;
                 }
                 catch (Exception)
@@ -618,7 +664,9 @@ public partial class MainWindow
 
                 if (accessCheckSucceeded && !accessIsAllowed)
                 {
-                    SetNotificationAvailability(NotificationAvailability.AccessDenied, $"Notification listener access lost during sync; {ex}");
+                    SetNotificationAvailability(
+                        NotificationAccessStatusPolicy.GetAvailability(observedAccessStatus!.Value),
+                        $"Notification listener access was not allowed during sync; {ex}");
                     ResetNotificationAttentionState();
                 }
                 else

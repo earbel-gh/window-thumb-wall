@@ -1,7 +1,23 @@
+using Windows.UI.Notifications.Management;
+
 namespace WindowThumbWall.Tests;
 
 public sealed class NotificationSessionAwaitTests
 {
+    [Theory]
+    [InlineData(UserNotificationListenerAccessStatus.Unspecified, nameof(NotificationAvailability.AccessRequired), true)]
+    [InlineData(UserNotificationListenerAccessStatus.Denied, nameof(NotificationAvailability.AccessDenied), false)]
+    [InlineData(UserNotificationListenerAccessStatus.Allowed, nameof(NotificationAvailability.Listening), false)]
+    [InlineData((UserNotificationListenerAccessStatus)99, nameof(NotificationAvailability.AccessFailed), false)]
+    public void AccessStatusPolicy_RequestsOnlyUnspecifiedAndMapsDenialSeparately(
+        UserNotificationListenerAccessStatus accessStatus,
+        string expectedAvailability,
+        bool shouldRequest)
+    {
+        Assert.Equal(shouldRequest, NotificationAccessStatusPolicy.ShouldRequestAccess(accessStatus));
+        Assert.Equal(expectedAvailability, NotificationAccessStatusPolicy.GetAvailability(accessStatus).ToString());
+    }
+
     private sealed class FakeSession
     {
         internal bool IsSubscribed { get; private set; }
