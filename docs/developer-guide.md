@@ -43,7 +43,7 @@ $launch = .\packaging\start-development.ps1
 $launch | Select-Object ProcessId, DisplayDevice, StatePath
 ```
 
-Use PowerShell 7. The launcher resolves the Windows display device for Display 3, positions the first window there without activating it, and writes each launch to a separate state directory. Pass `-StateSeedPath` to start with a copy of a test fixture or `-ExecutablePath` for a different build. When debugging a running development build, attach to the returned `ProcessId` from an existing debugger session. Use the returned path and process to inspect and clean up your own test instance.
+Use PowerShell 7. The launcher resolves the Windows display device for Display 3, seeds the initial position before the first window is shown, suppresses activation for that first show, and writes each launch to a separate state directory. Pass `-StateSeedPath` to start with a copy of a test fixture or `-ExecutablePath` for a different build. When debugging a running development build, attach to the returned `ProcessId` from an existing debugger session. Use the returned path and process to inspect and clean up your own test instance.
 
 If Display 3 is unavailable or the current foreground window occupies it, the launcher refuses to start. Continue the checks that can run without a window. Get approval for the specific test before using foreground activation or exclusive input. For installed-package verification, use an isolated Windows user or guest and the package checklist below.
 
@@ -75,7 +75,7 @@ Automatic windows fill their planned position in the wall while preserving the r
 
 Use **Choose window** on a live or unresolved slot to replace its target. A new DWM registration must succeed before the app replaces the existing display. **Remove wall slot** removes the layout entry. Its specific auto-add rule stays available in the sidebar and can show its slot again. **Remove rule** removes the registration and keeps the slot.
 
-The first schema 2 save preserves the old settings in `state.json.pre-v2.bak`. A failed save is shown in the sidebar. Retry a transient failure there. If another instance saved a newer revision, save a recovery copy before restarting.
+The first schema 2 save preserves the old settings in `state.json.pre-v2.bak`. A failed save is shown in the sidebar. Retry a transient failure there. If another instance saved a newer revision, save a recovery copy before restarting. A temporary file-sharing lock serializes writes to the same settings path across Windows sessions.
 
 Automatic addition has one persistent in-memory ordering tracker for the lifetime of the running application. At startup, the application seeds already-open eligible windows from the available Z-order state as a deterministic best-effort approximation. Windows observed through later Shell Hook create notifications are appended in observed creation order; destroy notifications remove them, so a reused numeric HWND receives a new position.
 

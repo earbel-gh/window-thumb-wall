@@ -87,14 +87,24 @@ $stateJson = ConvertTo-Json -InputObject $state -Depth 100
 
 # Re-read the exact GDI target and foreground ownership immediately before launch.
 [WindowThumbWall.DevelopmentLauncher.NativeLauncher]::RequireTargetAvailable($display)
-$stateVariable = 'WINDOWTHUMBWALL_STATE_PATH'
-$previousStatePath = [Environment]::GetEnvironmentVariable($stateVariable, 'Process')
+$childEnvironment = @{
+    WINDOWTHUMBWALL_STATE_PATH = $statePath
+    WINDOWTHUMBWALL_DEVELOPMENT_NO_ACTIVATE = '1'
+}
+$previousEnvironment = @{}
+foreach ($name in $childEnvironment.Keys) {
+    $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
 try {
-    [Environment]::SetEnvironmentVariable($stateVariable, $statePath, 'Process')
+    foreach ($name in $childEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $childEnvironment[$name], 'Process')
+    }
     $process = [WindowThumbWall.DevelopmentLauncher.NativeLauncher]::Launch($executablePath)
 }
 finally {
-    [Environment]::SetEnvironmentVariable($stateVariable, $previousStatePath, 'Process')
+    foreach ($name in $previousEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process')
+    }
 }
 
 [pscustomobject]@{

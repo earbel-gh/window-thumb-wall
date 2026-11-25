@@ -3,7 +3,8 @@ namespace WindowThumbWall;
 internal sealed class TaskbarWindowOrder
 {
     private readonly List<IntPtr> _handles = [];
-    private readonly HashSet<IntPtr> _handleSet = [];
+    private readonly Dictionary<IntPtr, long> _windowLifetimes = [];
+    private long _nextLifetime;
 
     internal void ObserveWindowsInZOrder(IEnumerable<IntPtr> handlesInZOrder)
     {
@@ -16,19 +17,23 @@ internal sealed class TaskbarWindowOrder
 
     internal void ObserveCreated(IntPtr handle)
     {
-        if (handle == IntPtr.Zero || !_handleSet.Add(handle))
+        if (handle == IntPtr.Zero || _windowLifetimes.ContainsKey(handle))
             return;
 
+        _windowLifetimes.Add(handle, ++_nextLifetime);
         _handles.Add(handle);
     }
 
     internal void ObserveDestroyed(IntPtr handle)
     {
-        if (!_handleSet.Remove(handle))
+        if (!_windowLifetimes.Remove(handle))
             return;
 
         _handles.Remove(handle);
     }
+
+    internal long? GetLifetime(IntPtr handle) =>
+        _windowLifetimes.TryGetValue(handle, out long lifetime) ? lifetime : null;
 
     internal IReadOnlyList<T> Order<T>(IEnumerable<T> windowsInZOrder, Func<T, IntPtr> handleSelector)
     {

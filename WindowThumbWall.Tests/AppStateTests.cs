@@ -258,6 +258,32 @@ public sealed class AppStateTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveWithStatus_SerializesSimultaneousWritersToTheSameFile()
+    {
+        AppState first = LoadMissingState();
+        AppState second = LoadMissingState();
+        first.LeftPanelWidth = 240;
+        second.LeftPanelWidth = 360;
+        using var ready = new Barrier(2);
+
+        AppStateSaveStatus SaveTogether(AppState state)
+        {
+            Assert.True(ready.SignalAndWait(TimeSpan.FromSeconds(8)), "Both writers must reach the write gate.");
+            return state.SaveWithStatus();
+        }
+
+        AppStateSaveStatus[] results = await Task.WhenAll(
+            Task.Run(() => SaveTogether(first)),
+            Task.Run(() => SaveTogether(second)));
+
+        Assert.Single(results, status => status == AppStateSaveStatus.Saved);
+        Assert.Single(results, status => status == AppStateSaveStatus.SourceChanged);
+        double winningWidth = results[0] == AppStateSaveStatus.Saved ? first.LeftPanelWidth : second.LeftPanelWidth;
+        Assert.Equal(winningWidth, AppState.Load().LeftPanelWidth);
+        Assert.Equal([_statePath], Directory.GetFiles(_tempDirectory));
+    }
+
+    [Fact]
     public void SaveWithStatus_DetectsConcurrentSourceChangeAndAllowsReloadRetry()
     {
         AppState first = LoadMissingState();

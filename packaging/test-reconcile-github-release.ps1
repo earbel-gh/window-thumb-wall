@@ -200,7 +200,10 @@ try {
 
     function Invoke-WebRequest {
         param([string]$Uri, [string]$Method, [hashtable]$Headers, [switch]$SkipHttpErrorCheck,
-            [string]$OutFile, [switch]$PassThru)
+            [string]$OutFile, [switch]$PassThru, [int]$MaximumRedirection)
+        if ($Method -eq 'POST' -and (!$PSBoundParameters.ContainsKey('MaximumRedirection') -or $MaximumRedirection -ne 0)) {
+            throw 'A write request followed HTTP redirects.'
+        }
         if ($OutFile) {
             if (!$PassThru) { return }
             [IO.File]::WriteAllBytes($OutFile, [byte[]]@(1, 2, 3))
@@ -215,6 +218,7 @@ try {
     $binaryFile = Join-Path $scratch 'binary'
     $reply = Invoke-GitHubReleaseApi -Method GET -Uri 'https://api.github.com/repos/fixture/window-thumb-wall/releases/assets/1' -OutPath $binaryFile
     if ($reply.StatusCode -ne 200 -or (Get-Item -LiteralPath $binaryFile).Length -ne 3) { throw 'The binary download lost its HTTP result or content.' }
+    $null = Invoke-GitHubReleaseApi -Method POST -Uri 'https://api.github.com/repos/fixture/window-thumb-wall/releases'
     Assert-Throws -Name 'reject credential forwarding to another origin' -Action {
         Invoke-GitHubReleaseApi -Method POST -Uri 'https://unrelated.invalid/upload'
     }

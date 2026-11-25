@@ -14,6 +14,14 @@ internal sealed class WindowIdentity
 
     internal static WindowIdentity Capture(IntPtr handle)
     {
+        WindowIdentity identity = CaptureLive(handle);
+        identity.ExecutablePath = NativeMethods.GetProcessImagePath(handle);
+        identity.AppUserModelId = NativeMethods.GetWindowAppUserModelId(handle);
+        return identity;
+    }
+
+    internal static WindowIdentity CaptureLive(IntPtr handle)
+    {
         NativeMethods.GetWindowThreadProcessId(handle, out uint processId);
 
         return new WindowIdentity
@@ -21,9 +29,7 @@ internal sealed class WindowIdentity
             Handle = handle == IntPtr.Zero ? null : handle.ToInt64(),
             ProcessId = processId == 0 ? null : processId,
             ProcessStartTimeUtcTicks = GetProcessStartTimeUtcTicks(processId),
-            ExecutablePath = NativeMethods.GetProcessImagePath(handle),
-            WindowClassName = NativeMethods.GetWindowClassName(handle),
-            AppUserModelId = NativeMethods.GetWindowAppUserModelId(handle)
+            WindowClassName = NativeMethods.GetWindowClassName(handle)
         };
     }
 
@@ -33,7 +39,7 @@ internal sealed class WindowIdentity
             return false;
 
         NativeMethods.GetWindowThreadProcessId(handle, out uint processId);
-        if (processId == 0 || (ProcessId is uint savedProcessId && processId != savedProcessId))
+        if (processId == 0 || ProcessId != processId)
             return false;
 
         if (!string.IsNullOrWhiteSpace(WindowClassName) &&

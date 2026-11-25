@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -11,7 +9,7 @@ internal sealed class AppState
 {
     internal const string StatePathOverrideEnvironmentVariable = "WINDOWTHUMBWALL_STATE_PATH";
     internal const int CurrentSchemaVersion = 2;
-    private static readonly TimeSpan StateMutexTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan StateWriteLockTimeout = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     [JsonIgnore]
@@ -53,10 +51,6 @@ internal sealed class AppState
         {
             return FailedLoad(null, null, ex);
         }
-
-        using StateMutex? mutex = TryAcquireMutex(path);
-        if (mutex == null)
-            return FailedLoad(path, null, new IOException("Could not acquire the state mutex."));
 
         try
         {
@@ -123,13 +117,18 @@ internal sealed class AppState
             return AppStateSaveStatus.Failed;
         }
 
-        using StateMutex? mutex = TryAcquireMutex(path);
-        if (mutex == null)
-            return AppStateSaveStatus.Failed;
-
         string? tempPath = null;
         try
         {
+            string? directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(directory))
+                return AppStateSaveStatus.Failed;
+
+            Directory.CreateDirectory(directory);
+            using FileStream? writeLock = TryAcquireStateWriteLock(path);
+            if (writeLock == null)
+                return AppStateSaveStatus.Failed;
+
             byte[]? observed = ReadStateFile(path);
             if (!ByteArraysEqual(observed, SourceRevision))
                 return AppStateSaveStatus.SourceChanged;
@@ -139,10 +138,6 @@ internal sealed class AppState
             ValidateVersion2State(this);
 
             byte[] data = JsonSerializer.SerializeToUtf8Bytes(this, JsonOptions);
-            string? directory = Path.GetDirectoryName(path);
-            if (string.IsNullOrEmpty(directory))
-                return AppStateSaveStatus.Failed;
-            Directory.CreateDirectory(directory);
 
             if (NeedsMigrationBackup && observed != null && !EnsureMigrationBackup(path, observed))
                 return AppStateSaveStatus.Failed;
@@ -383,52 +378,47 @@ internal sealed class AppState
 
     private static byte[]? ReadStateFile(string path)
     {
-        try { return File.ReadAllBytes(path); }
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using var contents = new MemoryStream();
+            file.CopyTo(contents);
+            return contents.ToArray();
+        }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return null;
         }
     }
 
-    private static StateMutex? TryAcquireMutex(string path)
+    private static FileStream? TryAcquireStateWriteLock(string path)
     {
-        string mutexName = "Local\\WindowThumbWall.State." + Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(path.ToUpperInvariant())));
-        try
+        // File sharing enforces the write lock across Windows sessions.
+        string lockPath = path + ".write-lock";
+        var elapsed = Stopwatch.StartNew();
+        while (true)
         {
-            var mutex = new Mutex(initiallyOwned: false, mutexName);
             try
             {
-                if (!mutex.WaitOne(StateMutexTimeout))
-                {
-                    mutex.Dispose();
-                    return null;
-                }
-                return new StateMutex(mutex);
+                return new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1,
+                    FileOptions.DeleteOnClose);
             }
-            catch (AbandonedMutexException)
+            catch (IOException ex) when (IsWriteLockBusy(ex))
             {
-                return new StateMutex(mutex);
+                if (elapsed.Elapsed >= StateWriteLockTimeout)
+                    return null;
+
+                Thread.Sleep(50);
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
-        {
-            Trace.TraceWarning("Could not acquire WindowThumbWall state mutex: {0}", ex.GetType().Name);
-            return null;
         }
     }
+
+    private static bool IsWriteLockBusy(IOException exception) =>
+        (exception.HResult & 0xffff) is 32 or 33 or 80 or 183; // Windows sharing, lock, or file-exists errors.
 
     private static bool ByteArraysEqual(byte[]? left, byte[]? right) =>
         left == null ? right == null : right != null && left.AsSpan().SequenceEqual(right);
 
-    private sealed class StateMutex(Mutex mutex) : IDisposable
-    {
-        public void Dispose()
-        {
-            mutex.ReleaseMutex();
-            mutex.Dispose();
-        }
-    }
 }
 
 internal enum AppStateLoadStatus

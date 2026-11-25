@@ -279,6 +279,7 @@ function Invoke-GitHubReleaseApi {
     }
     $headers = @{ Authorization = "Bearer $script:ReleaseApiToken"; Accept = $Accept }
     $parameters = @{ Uri = $Uri; Method = $Method; Headers = $headers; SkipHttpErrorCheck = $true }
+    if ($Method -ne 'GET') { $parameters.MaximumRedirection = 0 }
     if ($Body) { $parameters.ContentType = 'application/json'; $parameters.Body = ConvertTo-Json -InputObject $Body -Depth 5 -Compress }
     if ($FilePath) { $parameters.InFile = $FilePath; $parameters.ContentType = 'application/octet-stream' }
     if ($OutPath) { $parameters.OutFile = $OutPath; $parameters.PassThru = $true }

@@ -101,6 +101,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        if (string.Equals(Environment.GetEnvironmentVariable("WINDOWTHUMBWALL_DEVELOPMENT_NO_ACTIVATE"),
+            "1", StringComparison.Ordinal))
+        {
+            ShowActivated = false;
+        }
         ApplyLocalization();
 
         // Restore window geometry before the window is shown.
@@ -674,11 +679,14 @@ public partial class MainWindow : Window
             {
                 Handle = hWnd,
                 Title = NativeMethods.GetWindowTitle(hWnd),
-                ProcessName = NativeMethods.GetProcessName(hWnd)
+                ProcessName = NativeMethods.GetProcessName(hWnd),
+                Identity = WindowIdentity.CaptureLive(hWnd)
             });
             return true;
         }, IntPtr.Zero);
         _taskbarWindowOrder.ObserveWindowsInZOrder(_windowCache.Select(window => window.Handle));
+        foreach (WindowInfo window in _windowCache)
+            window.ObservedLifetime = _taskbarWindowOrder.GetLifetime(window.Handle);
         ApplyFilter();
     }
 
@@ -736,18 +744,21 @@ public partial class MainWindow : Window
             FindVisualParent<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is not WindowInfo info)
             return;
 
+        WindowInfo? selectedWindow = CaptureCurrentWindow(info);
         if (_windowChoice is WindowChoice choice)
         {
-            if (!ResolveWindowChoice(choice, CaptureChoiceWindow(info)))
+            if (selectedWindow == null || !ResolveWindowChoice(choice, selectedWindow))
                 ShowRuleNotice("rule.cannotChoose");
         }
-        else
-            AddWindowToMonitor(info);
+        else if (selectedWindow != null)
+        {
+            AddWindowToMonitor(selectedWindow);
+        }
     }
 
     private bool PinWindowToMonitor(WindowInfo info)
     {
-        if (string.IsNullOrWhiteSpace(info.ProcessName) || !IsCurrentChoiceWindow(info))
+        if (string.IsNullOrWhiteSpace(info.ProcessName) || !IsCurrentWindow(info))
             return false;
 
         ThumbnailSlot? existingSlot = _slots.FirstOrDefault(slot =>
@@ -779,7 +790,7 @@ public partial class MainWindow : Window
     {
         int slotIndex = FindSlotIndex(choice.SlotId);
         if (!ReferenceEquals(_windowChoice, choice) || slotIndex < 0 ||
-            !IsCurrentChoiceWindow(info) || _slots[slotIndex].Intent is not SlotState previous)
+            !IsCurrentWindow(info) || _slots[slotIndex].Intent is not SlotState previous)
             return false;
 
         int existingIndex = FindSlotIndexBySourceHwnd(info.Handle);
@@ -807,16 +818,25 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private static WindowInfo CaptureChoiceWindow(WindowInfo info) => new()
+    private WindowInfo? CaptureCurrentWindow(WindowInfo info)
     {
-        Handle = info.Handle,
-        Title = info.Title,
-        ProcessName = info.ProcessName,
-        Identity = WindowIdentity.Capture(info.Handle)
-    };
+        if (!IsCurrentWindow(info))
+            return null;
 
-    private static bool IsCurrentChoiceWindow(WindowInfo info) =>
-        info.Handle != IntPtr.Zero && NativeMethods.IsAltTabWindow(info.Handle) &&
+        return new WindowInfo
+        {
+            Handle = info.Handle,
+            Title = NativeMethods.GetWindowTitle(info.Handle),
+            ProcessName = info.ProcessName,
+            Identity = WindowIdentity.Capture(info.Handle),
+            ObservedLifetime = info.ObservedLifetime
+        };
+    }
+
+    private bool IsCurrentWindow(WindowInfo info) =>
+        info.Handle != IntPtr.Zero && info.ObservedLifetime is long lifetime &&
+        _taskbarWindowOrder.GetLifetime(info.Handle) == lifetime &&
+        NativeMethods.IsAltTabWindow(info.Handle) &&
         info.Identity?.IsSameLiveProcessAndClass(info.Handle) == true &&
         string.Equals(info.ProcessName, NativeMethods.GetProcessName(info.Handle), StringComparison.OrdinalIgnoreCase);
 
@@ -850,13 +870,8 @@ public partial class MainWindow : Window
     {
         var processes = slots.Select(slot => slot.ProcessName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return _windowCache.Where(window => processes.Contains(window.ProcessName))
-            .Select(window => new WindowInfo
-            {
-                Handle = window.Handle,
-                Title = window.Title,
-                ProcessName = window.ProcessName,
-                Identity = WindowIdentity.Capture(window.Handle)
-            })
+            .Select(CaptureCurrentWindow)
+            .OfType<WindowInfo>()
             .ToArray();
     }
 
@@ -1120,8 +1135,11 @@ public partial class MainWindow : Window
         item.IsSelected = true;
         if (list.SelectedItem is not WindowInfo info) return;
 
+        WindowInfo? choiceInfo = CaptureCurrentWindow(info);
+        if (choiceInfo == null)
+            return;
+
         var menu = new ContextMenu();
-        WindowInfo choiceInfo = CaptureChoiceWindow(info);
         if (_windowChoice is WindowChoice choice)
         {
             var useItem = new MenuItem { Header = LocalizedText.Get("button.useWindow") };
@@ -1149,7 +1167,7 @@ public partial class MainWindow : Window
         var addAppItem = new MenuItem { Header = LocalizedText.Get("menu.addApp") };
         addAppItem.Click += (_, _) =>
         {
-            if (IsCurrentChoiceWindow(choiceInfo))
+            if (IsCurrentWindow(choiceInfo))
                 RegisterAppRule(choiceInfo);
         };
 
@@ -1336,7 +1354,8 @@ public partial class MainWindow : Window
             if (!nextInsertIndexByProcess.TryGetValue(info.ProcessName, out int insertIndex))
                 continue;
 
-            if (!AddWindowToMonitor(info, insertIndex))
+            WindowInfo? candidate = CaptureCurrentWindow(info);
+            if (candidate == null || !AddWindowToMonitor(candidate, insertIndex))
                 continue;
 
             AutoAddWindowPlanner.AdvanceInsertIndexes(
@@ -1461,7 +1480,9 @@ public partial class MainWindow : Window
 
     private bool AssignNewSlot(int idx, WindowInfo info, bool isPinned, bool isAutomatic = false)
     {
-        WindowIdentity identity = info.Identity ?? WindowIdentity.Capture(info.Handle);
+        if (info.Identity is not WindowIdentity identity)
+            return false;
+
         SlotState intent = WindowSlotRules.CreateIntent(_slots[idx].SlotId, info.ProcessName, info.Title, identity, isAutomatic);
         if (!AssignSlot(idx, info, intent))
             return false;
@@ -1472,9 +1493,11 @@ public partial class MainWindow : Window
 
     private bool AssignSlot(int idx, WindowInfo info, SlotState intent)
     {
+        if (!IsCurrentWindow(info))
+            return false;
+
         IntPtr previousSource = _slots[idx].SourceHwnd;
-        WindowIdentity identity = info.Identity ?? WindowIdentity.Capture(info.Handle);
-        if (!_slots[idx].Assign(info.Handle, info.Title, info.ProcessName, identity, intent))
+        if (!_slots[idx].Assign(info.Handle, info.Title, info.ProcessName, info.Identity!, intent))
             return false;
 
         if (previousSource != IntPtr.Zero && previousSource != info.Handle)
@@ -1662,11 +1685,18 @@ public partial class MainWindow : Window
 
     private void ActivateSlotWindow(int idx)
     {
-        if (idx >= _slots.Count || !_slots[idx].IsOccupied) return;
-        IntPtr hwnd = _slots[idx].SourceHwnd;
+        if (idx < 0 || idx >= _slots.Count)
+            return;
+
+        ThumbnailSlot slot = _slots[idx];
+        if (!slot.IsOccupied || _destroyedBoundWindows.Contains(slot.SourceHwnd) || !slot.IsSourceWindowValid())
+            return;
+
+        IntPtr hwnd = slot.SourceHwnd;
         if (NativeMethods.IsIconic(hwnd))
             NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-        NativeMethods.SetForegroundWindow(hwnd);
+        if (slot.IsSourceWindowValid())
+            NativeMethods.SetForegroundWindow(hwnd);
     }
 
     private void Cell_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
