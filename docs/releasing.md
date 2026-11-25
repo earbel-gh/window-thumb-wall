@@ -99,12 +99,19 @@ dedicated publication operation when changing or running it.
 
 ## MSI upgrade check
 
-The signed-tag build checks both a fresh x64 install and an upgrade from the
-published v0.6.10 MSI on its isolated Windows runner. The upgrade keeps the
-shared cleanup component identity and schedules removal of the old product
-after the new install executes. Its check confirms the old ProductCode is
-gone, the new executable has the release version, and a legacy settings
-fixture remains byte-for-byte intact. A failed check holds both publication jobs.
+The build checks a fresh x64 install, verifies the installed version, and starts
+the app with isolated state. It waits for the message loop and checks for a
+main window. When the window is observable, the app must close cleanly. When
+the window is unavailable on a GitHub-hosted runner, the check records that
+limitation and verifies cleanup of its own process. It then uninstalls the package
+and checks that the executable was removed. Use the developer guide to verify
+interactive behavior on Windows.
+
+The separate upgrade from the published v0.6.10 MSI keeps the shared cleanup
+component identity and removes the old product after the new install executes.
+It confirms removal of the old ProductCode, the new release version, and
+byte-for-byte preservation of legacy settings. A failed check holds both
+publication jobs.
 
 For pre-integration evidence, dispatch **Build Release Artifacts** on the exact
 candidate branch with `verify_previous_msi_upgrade` enabled. Its isolated
@@ -287,6 +294,7 @@ Run the following in the product checkout before sharing the candidate.
 .\packaging\test-reconcile-github-release.ps1
 .\packaging\test-verify-store-submission-slot.ps1
 .\packaging\test-verify-release-preflight.ps1
+.\packaging\test-verify-msi-app-startup.ps1
 ```
 
 Generate and review the localized metadata with the local test command below.

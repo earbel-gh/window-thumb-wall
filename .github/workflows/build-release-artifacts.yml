@@ -150,6 +150,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'GitHub draft recovery fixtures failed.' }
           pwsh -NoLogo -NoProfile -File .\packaging\test-verify-release-preflight.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Release preflight fixtures failed.' }
+          pwsh -NoLogo -NoProfile -File .\packaging\test-verify-msi-app-startup.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'MSI application startup fixtures failed.' }
 
       - name: Install WiX
         run: |
@@ -283,19 +285,9 @@ jobs:
             $installedVersion = (Get-Item -LiteralPath $installedExe).VersionInfo.FileVersion
             if ($installedVersion -ne $expectedFileVersion) { throw "Installed executable version was $installedVersion, expected $expectedFileVersion" }
 
-            $app = Start-Process -FilePath $installedExe -PassThru
-            Start-Sleep -Seconds 3
-            $app.Refresh()
-            if ($app.HasExited) { throw "Installed application exited during smoke test with code $($app.ExitCode)" }
-            if ($app.CloseMainWindow()) {
-              if (-not $app.WaitForExit(10000)) { throw 'Installed application did not exit after a clean close request' }
-            } elseif (-not [Environment]::UserInteractive) {
-              # GitHub-hosted runners have no interactive window station; clean up the proven smoke-test process.
-              Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
-              if (-not $app.WaitForExit(10000)) { throw 'Installed application did not exit after headless smoke-test cleanup' }
-            } else {
-              throw 'Installed application did not accept a clean close request'
-            }
+            $stateDirectory = Join-Path $env:RUNNER_TEMP "window-thumb-wall-msi-$([Guid]::NewGuid())"
+            $statePath = Join-Path $stateDirectory 'state.json'
+            & .\packaging\verify-msi-app-startup.ps1 -ExecutablePath $installedExe -StatePath $statePath -AllowNoMainWindow
           }
           finally {
             if ($installed) {
