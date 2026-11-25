@@ -66,6 +66,22 @@ internal static class NotificationSnapshotRecoveryPolicy
             seconds = Math.Min(seconds * 2, MaximumRetrySeconds);
         return TimeSpan.FromSeconds(seconds);
     }
+
+    internal static bool ApplySnapshot<TSnapshot>(
+        bool baselinePending,
+        TSnapshot snapshot,
+        Action<TSnapshot> recordBaseline,
+        Action<TSnapshot> reconcile)
+    {
+        if (baselinePending)
+        {
+            recordBaseline(snapshot);
+            return true;
+        }
+
+        reconcile(snapshot);
+        return false;
+    }
 }
 
 internal sealed record NotificationAttentionGroup(
@@ -438,47 +454,11 @@ public partial class MainWindow
 
             if (_notificationSubscriptionFailureLatched)
             {
-                bool baselineRecorded = false;
-                bool recoveryBaselineIsCurrent = await _notificationSessionLifecycle.AwaitAndApplyIfCurrentAsync(
-                    session,
-                    ReadNotificationSnapshotAsync(
-                        session,
-                        listener,
-                        () => (accessStatus = listener.GetAccessStatus()) == UserNotificationListenerAccessStatus.Allowed),
-                    currentSession => IsCurrentNotificationSession(currentSession) &&
-                        (accessStatus = listener.GetAccessStatus()) == UserNotificationListenerAccessStatus.Allowed,
-                    snapshot =>
-                    {
-                        if (!snapshot.Started)
-                            return;
-                        RecordNotificationBaseline(session, snapshot.Notifications);
-                        baselineRecorded = true;
-                    });
-                if (!recoveryBaselineIsCurrent || !baselineRecorded || !IsCurrentNotificationSession(session))
-                {
-                    if (IsCurrentNotificationSession(session) && accessStatus != UserNotificationListenerAccessStatus.Allowed)
-                    {
-                        SetNotificationAvailability(
-                            NotificationAccessStatusPolicy.GetAvailability(accessStatus),
-                            $"Notification listener access was not allowed while recording recovery baseline: {accessStatus}");
-                        ResetNotificationAttentionState();
-                    }
-                    else if (IsCurrentNotificationSession(session) && !baselineRecorded)
-                    {
-                        session.BaselinePending = false;
-                        SetNotificationAvailability(NotificationAvailability.AccessFailed, "Recovery baseline snapshot was not started while access remained allowed.");
-                        DisposeNotificationListener();
-                    }
-                    return;
-                }
-
-                session.BaselinePending = false;
                 session.RecoveryOnly = true;
                 session.RecoveryFailureCount = 0;
                 SetNotificationAvailability(
                     NotificationAvailability.SnapshotRecoveryWaiting,
-                    "A prior notification subscription failure is latched; preserving a fresh baseline and staying in snapshot-only recovery.");
-                AppendNotificationDiagnostic("Notification snapshot recovery re-enabled from a fresh baseline; subscription remains suppressed.");
+                    "A prior notification subscription failure is latched; recording a fresh baseline in snapshot-only recovery.");
                 StartNotificationSnapshotRecovery(session);
                 return;
             }
@@ -743,6 +723,7 @@ public partial class MainWindow
 
             IReadOnlyList<UserNotification>? notifications = null;
             bool recoverySnapshotRead = false;
+            bool recoveryBaselineRecorded = false;
             bool recoveryReadIsCurrent = await _notificationSessionLifecycle.AwaitAndApplyIfCurrentAsync(
                 session,
                 ReadNotificationSnapshotAsync(
@@ -758,7 +739,11 @@ public partial class MainWindow
                         return;
                     notifications = result.Notifications;
                     recoverySnapshotRead = true;
-                    ReconcileNotificationSnapshot(result.Notifications, "snapshot-recovery");
+                    recoveryBaselineRecorded = NotificationSnapshotRecoveryPolicy.ApplySnapshot(
+                        session.BaselinePending,
+                        result.Notifications,
+                        snapshot => RecordNotificationBaseline(session, snapshot),
+                        snapshot => ReconcileNotificationSnapshot(snapshot, "snapshot-recovery"));
                 });
             if (accessStatus != UserNotificationListenerAccessStatus.Allowed && IsCurrentNotificationSession(session))
             {
@@ -775,6 +760,18 @@ public partial class MainWindow
             if (!recoverySnapshotRead || notifications == null)
             {
                 SetNotificationAvailability(NotificationAvailability.SnapshotRecoveryWaiting, "Snapshot recovery read was deferred before starting; retry scheduled.");
+                ScheduleNotificationSnapshotRecovery(session);
+                return;
+            }
+
+            if (session.BaselinePending && recoveryBaselineRecorded)
+            {
+                session.BaselinePending = false;
+                session.RecoveryFailureCount = 0;
+                SetNotificationAvailability(
+                    NotificationAvailability.SnapshotRecoveryWaiting,
+                    "Recovery baseline recorded; the next snapshot will reconcile notification deltas.");
+                AppendNotificationDiagnostic("Notification snapshot recovery re-enabled from a fresh baseline; subscription remains suppressed.");
                 ScheduleNotificationSnapshotRecovery(session);
                 return;
             }

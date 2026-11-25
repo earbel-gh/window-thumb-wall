@@ -39,6 +39,29 @@ public sealed class NotificationSessionAwaitTests
         Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), NotificationSnapshotRecoveryPolicy.GetRetryDelay(failures));
     }
 
+    [Fact]
+    public void ReenabledSnapshotRecovery_RecordsBaselineBeforeReconcilingLaterSnapshot()
+    {
+        List<string> actions = [];
+        int[] baseline = [1, 2];
+        int[] laterSnapshot = [1, 2, 3];
+
+        bool baselineWasRecorded = NotificationSnapshotRecoveryPolicy.ApplySnapshot(
+            baselinePending: true,
+            snapshot: baseline,
+            snapshot => actions.Add($"baseline:{snapshot.Length}"),
+            _ => actions.Add("unexpected-reconcile"));
+        bool laterSnapshotReconciledAsDelta = NotificationSnapshotRecoveryPolicy.ApplySnapshot(
+            baselinePending: false,
+            snapshot: laterSnapshot,
+            _ => actions.Add("unexpected-baseline"),
+            snapshot => actions.Add($"reconcile:{snapshot.Length}"));
+
+        Assert.True(baselineWasRecorded);
+        Assert.False(laterSnapshotReconciledAsDelta);
+        Assert.Equal(["baseline:2", "reconcile:3"], actions);
+    }
+
     private sealed class FakeSession
     {
         internal bool IsSubscribed { get; private set; }
