@@ -309,7 +309,7 @@ Run the following in the product checkout before sharing the candidate.
 .\packaging\test-verify-release-tag.ps1
 .\packaging\test-reconcile-github-release.ps1
 .\packaging\test-verify-store-submission-slot.ps1
-.\packaging\test-publish-store-draft.ps1
+pwsh -NoLogo -NoProfile -File .\packaging\test-publish-store-draft.ps1
 .\packaging\test-verify-release-preflight.ps1
 .\packaging\test-verify-msi-app-startup.ps1
 ```
