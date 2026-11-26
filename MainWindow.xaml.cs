@@ -392,7 +392,9 @@ public partial class MainWindow : Window
                 EndWindowChoice();
                 e.Handled = true;
                 break;
-            case Key.Enter when _isFullScreen || !FilterBox.IsFocused:
+            case Key.Enter when _isFullScreen ||
+                (!FilterBox.IsFocused && e.OriginalSource != CollapseLeftPanelButton &&
+                 e.OriginalSource != ExpandLeftPanelButton && e.OriginalSource != StateRetryButton):
                 ToggleFullScreen();
                 e.Handled = true;
                 break;
