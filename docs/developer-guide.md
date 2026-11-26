@@ -47,7 +47,7 @@ Use PowerShell 7. The launcher resolves the Windows display device for Display 3
 
 If Display 3 is unavailable or the current foreground window occupies it, the launcher refuses to start. Continue the checks that can run without a window. Do not force focus or synthesize user input. When a check requires source-window activation, use a deliberate, valid action through the running app and record the result. For installed-package verification, use an isolated Windows user or guest and the package checklist below.
 
-If you start the unpackaged `dotnet run` / `bin\Debug` build, the Settings window now keeps `Reflect OS notifications` disabled and explains that notification attention requires the installed MSIX runtime.
+In an unpackaged run, the saved notification preference remains configurable, but notification attention is unavailable. Settings shows that packaged app identity is required.
 A healthy installed MSIX session uses notification-change events and a 5-second follow-up reconciliation window for near-term toast updates; a 30-second monitor checks permission only. If event subscription fails with RPC HRESULT `0x800706BE` after the initial baseline, the listener enters process-latched snapshot-only recovery. It reads immediately, then every 4 seconds after successful reads; consecutive read failures back off through 4, 8, 16, and 30 seconds. At most one read runs at a time. Recovery does not automatically resubscribe to events, and its snapshots can miss short-lived notifications. Turning the preference off and on starts a fresh baseline but remains snapshot-only until the process exits.
 
 ## Build And Test Split

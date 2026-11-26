@@ -155,12 +155,12 @@ $pagesPrivacyUrl = if ($repositoryParts.Length -eq 2) {
     'https://tsuchim.github.io/WindowThumbWall/PRIVACY.html'
 }
 $downloadsSection = if ($isDev) {
-    $downloadsSection = [string]::Join("`n", @(
+    [string]::Join("`n", @(
         '## Downloads'
         'Download links are omitted for dev builds. Use the workflow artifacts from the current run instead.'
     ))
 } else {
-    $downloadsSection = [string]::Join("`n", @(
+    [string]::Join("`n", @(
         '## Downloads'
         'Official builds are available in the following formats:'
         ''

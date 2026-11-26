@@ -256,6 +256,10 @@ Behavior:
 4. The workflow verifies the bundle version and architectures, then records the
    package SHA-256. It checks the frozen tag again before uploading the package
    as a draft submission through the Microsoft Store CLI.
+   The draft-upload script discards the CLI output because upload credentials
+   can appear in its diagnostics. The workflow records whether the command
+   succeeded and reports the CLI exit code on failure. Check the current
+   submission before retrying a failed upload.
 5. The workflow rechecks the tag before committing the draft submission.
    The GitHub draft job depends on this successful Store submission.
 
@@ -305,6 +309,7 @@ Run the following in the product checkout before sharing the candidate.
 .\packaging\test-verify-release-tag.ps1
 .\packaging\test-reconcile-github-release.ps1
 .\packaging\test-verify-store-submission-slot.ps1
+.\packaging\test-publish-store-draft.ps1
 .\packaging\test-verify-release-preflight.ps1
 .\packaging\test-verify-msi-app-startup.ps1
 ```

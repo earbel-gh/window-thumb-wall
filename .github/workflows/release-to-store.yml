@@ -342,8 +342,7 @@ jobs:
           $package = $packages[0]
           $actualSha256 = (Get-FileHash -LiteralPath $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualSha256 -cne $env:PACKAGE_SHA256) { throw 'The Store package changed after architecture verification.' }
-          msstore publish $package.FullName -id $env:STORE_PRODUCT_ID_NORMALIZED --noCommit -v
-          if ($LASTEXITCODE -ne 0) { throw "msstore publish failed with exit code $LASTEXITCODE." }
+          .\packaging\publish-store-draft.ps1 -PackagePath $package.FullName -ProductId $env:STORE_PRODUCT_ID_NORMALIZED
 
       - name: Reverify signed tag before Store submission commit
         if: ${{ !inputs.package_only }}
