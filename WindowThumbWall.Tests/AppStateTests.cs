@@ -2,6 +2,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace WindowThumbWall.Tests;
 
@@ -60,6 +61,7 @@ public sealed class AppStateTests : IDisposable
         AppState state = new()
         {
             AutoAddApps = ["chrome", "outlook"],
+            IsLeftPanelCollapsed = true,
             LeftPanelWidth = 320,
             AppListHeight = 240,
             EnableOsNotificationAttention = true,
@@ -90,6 +92,7 @@ public sealed class AppStateTests : IDisposable
         AppState loaded = AppState.Load();
 
         Assert.Equal(["chrome", "outlook"], loaded.AutoAddApps);
+        Assert.True(loaded.IsLeftPanelCollapsed);
         Assert.Equal(320, loaded.LeftPanelWidth);
         Assert.Equal(240, loaded.AppListHeight);
         Assert.True(loaded.EnableOsNotificationAttention);
@@ -430,6 +433,56 @@ public sealed class AppStateTests : IDisposable
         Assert.Equal(slot.RuleId, Assert.Single(saved.SpecificWindowRules).RuleId);
     }
 
+    [Fact]
+    public void CollapsedSidebarWidensWallAndRestoresPreviousWidthAfterRestart()
+    {
+        WriteState("""{"LeftPanelWidth":320}""");
+
+        RestoreAndClose(Visibility.Collapsed, inspect: window =>
+        {
+            var root = (Grid)window.Content;
+            var wall = (Grid)window.FindName("ThumbGrid");
+            var expand = (Button)window.FindName("ExpandLeftPanelButton");
+            var fullscreen = (Button)window.FindName("FullScreenButton");
+            Arrange(root);
+            double expandedWallWidth = wall.ActualWidth;
+            WindowStyle windowStyle = window.WindowStyle;
+
+            ((Button)window.FindName("CollapseLeftPanelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Arrange(root);
+            Assert.Equal(40, root.ColumnDefinitions[0].ActualWidth);
+            Assert.True(wall.ActualWidth > expandedWallWidth);
+            Assert.Equal(windowStyle, window.WindowStyle);
+
+            fullscreen.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(Visibility.Collapsed, expand.Visibility);
+            fullscreen.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(Visibility.Visible, expand.Visibility);
+        });
+
+        AppState saved = AppState.Load();
+        Assert.True(saved.IsLeftPanelCollapsed);
+        Assert.Equal(320, saved.LeftPanelWidth);
+        RestoreAndClose(Visibility.Collapsed, inspect: window =>
+        {
+            var sidebar = (Grid)window.FindName("LeftPanel");
+            var expand = (Button)window.FindName("ExpandLeftPanelButton");
+            Assert.Equal(Visibility.Collapsed, sidebar.Visibility);
+            Assert.Equal(Visibility.Visible, expand.Visibility);
+            expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(Visibility.Visible, sidebar.Visibility);
+            Assert.Equal(Visibility.Collapsed, expand.Visibility);
+            Assert.Equal(new GridLength(320), ((Grid)window.Content).ColumnDefinitions[0].Width);
+        });
+    }
+
+    private static void Arrange(Grid root)
+    {
+        root.Measure(new Size(1200, 780));
+        root.Arrange(new Rect(0, 0, 1200, 780));
+        root.UpdateLayout();
+    }
+
     private void WriteState(string contents)
     {
         Directory.CreateDirectory(_tempDirectory);
@@ -446,7 +499,8 @@ public sealed class AppStateTests : IDisposable
             {
                 Volatile.Write(ref stage, "construct main window");
                 var window = new MainWindow();
-                Volatile.Write(ref stage, "restore application rules");
+                Volatile.Write(ref stage, "restore panel layout and application rules");
+                Invoke(window, "RestorePanelLayout");
                 Invoke(window, "RestoreAutoAddApps");
                 Volatile.Write(ref stage, "restore slots");
                 Invoke(window, "RestoreSlots");
