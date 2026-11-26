@@ -155,7 +155,10 @@ jobs:
 
       - name: Test Store draft protection
         shell: pwsh
-        run: .\packaging\test-verify-store-submission-slot.ps1
+        run: |
+          .\packaging\test-verify-store-submission-slot.ps1
+          pwsh -NoLogo -NoProfile -File .\packaging\test-publish-store-draft.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Store draft upload logging fixtures failed.' }
 
       - name: Test tag verification, draft recovery and release preflight
         shell: pwsh
