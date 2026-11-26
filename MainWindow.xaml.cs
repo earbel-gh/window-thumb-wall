@@ -392,9 +392,9 @@ public partial class MainWindow : Window
                 EndWindowChoice();
                 e.Handled = true;
                 break;
-            case Key.Enter when _isFullScreen ||
-                (!FilterBox.IsFocused && e.OriginalSource != CollapseLeftPanelButton &&
-                 e.OriginalSource != ExpandLeftPanelButton && e.OriginalSource != StateRetryButton):
+            case Key.Enter when e.OriginalSource != CollapseLeftPanelButton &&
+                e.OriginalSource != ExpandLeftPanelButton && e.OriginalSource != StateRetryButton &&
+                (_isFullScreen || !FilterBox.IsFocused):
                 ToggleFullScreen();
                 e.Handled = true;
                 break;
@@ -1054,6 +1054,7 @@ public partial class MainWindow : Window
 
         if (_isFullScreen)
             ToggleFullScreen();
+        SetLeftPanelCollapsed(false);
         _windowChoice = new WindowChoice(slotId);
         FilterLabel.Text = LocalizedText.Get("label.chooseWindowForSlot");
         RuleNotice.Visibility = Visibility.Collapsed;
@@ -2087,8 +2088,13 @@ public partial class MainWindow : Window
 
     private void FullScreenButton_Click(object sender, RoutedEventArgs e) => ToggleFullScreen();
 
-    private void CollapseLeftPanelButton_Click(object sender, RoutedEventArgs e) =>
+    private void CollapseLeftPanelButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_windowChoice != null)
+            EndWindowChoice();
+
         SetLeftPanelCollapsed(true);
+    }
 
     private void ExpandLeftPanelButton_Click(object sender, RoutedEventArgs e) =>
         SetLeftPanelCollapsed(false);

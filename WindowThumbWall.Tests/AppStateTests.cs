@@ -551,6 +551,52 @@ public sealed class AppStateTests : IDisposable
             Assert.Same(wall, wallEnter.OriginalSource);
             Assert.True(wallEnter.Handled, "Enter from the wall must keep the existing fullscreen shortcut.");
             Assert.True(GetPrivateField<bool>(window, "_isFullScreen"));
+
+            KeyEventArgs retryEnterInFullscreen = RaiseEnter(retry, inputSource);
+            Assert.Same(retry, retryEnterInFullscreen.OriginalSource);
+            Assert.False(retryEnterInFullscreen.Handled,
+                "Enter on Retry must remain available to the button even while fullscreen.");
+            Assert.True(GetPrivateField<bool>(window, "_isFullScreen"));
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BeginWindowChoiceFromCollapsedSidebar_ExpandsAndCollapseCancels(bool startFullscreen)
+    {
+        AppState state = LoadMissingState();
+        Guid slotId = Guid.NewGuid();
+        state.IsLeftPanelCollapsed = true;
+        state.LeftPanelWidth = 320;
+        state.Slots = [new SlotState { SlotId = slotId, ProcessName = "editor", Title = "Saved intent" }];
+        Assert.Equal(AppStateSaveStatus.Saved, state.SaveWithStatus());
+
+        RestoreAndClose(Visibility.Collapsed, inspect: window =>
+        {
+            var leftPanel = (Grid)window.FindName("LeftPanel");
+            var collapse = (Button)window.FindName("CollapseLeftPanelButton");
+            var filterBox = (TextBox)window.FindName("FilterBox");
+            Assert.Equal(Visibility.Collapsed, leftPanel.Visibility);
+            filterBox.Focusable = false;
+
+            if (startFullscreen)
+                Invoke(window, "ToggleFullScreen");
+            Assert.Equal(startFullscreen, GetPrivateField<bool>(window, "_isFullScreen"));
+
+            Invoke(window, "BeginWindowChoice", slotId);
+
+            Assert.False(GetPrivateField<bool>(window, "_isFullScreen"));
+            Assert.False(GetPrivateField<bool>(window, "_isLeftPanelCollapsed"));
+            Assert.Equal(Visibility.Visible, leftPanel.Visibility);
+            object? choice = GetPrivateField<object?>(window, "_windowChoice");
+            Assert.NotNull(choice);
+            Assert.Equal(slotId, choice!.GetType().GetProperty("SlotId")!.GetValue(choice));
+
+            collapse.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.True(GetPrivateField<bool>(window, "_isLeftPanelCollapsed"));
+            Assert.Equal(Visibility.Collapsed, leftPanel.Visibility);
+            Assert.Null(GetPrivateField<object?>(window, "_windowChoice"));
         });
     }
 
